@@ -1,0 +1,16 @@
+.DS_Store
+*.log
+.idea/
+.vscode/
+.gradle/
+build/
+out/
+runs/
+*.iml
+
+# Plugin local state (per-run scratch produced when modsmith is exercised)
+.modsmith/
+
+# Local override of test fixtures
+examples/*/build/
+examples/*/runs/

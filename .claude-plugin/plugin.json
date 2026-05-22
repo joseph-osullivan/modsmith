@@ -1,0 +1,33 @@
+{
+  "name": "modsmith",
+  "version": "0.1.0",
+  "description": "AI-first Minecraft mod development: multi-loader (Fabric + NeoForge) scaffolding, dev loop, gametest, and review.",
+  "author": {
+    "name": "Joseph O'Sullivan"
+  },
+  "homepage": "https://github.com/joseph-osullivan/modsmith",
+  "repository": "https://github.com/joseph-osullivan/modsmith",
+  "license": "MIT",
+  "keywords": [
+    "minecraft",
+    "neoforge",
+    "fabric",
+    "modding",
+    "gradle",
+    "multi-loader"
+  ],
+  "skills": "./skills",
+  "agents": [
+    "agents/architect.md",
+    "agents/builder.md",
+    "agents/gametest-author.md",
+    "agents/scenario-author.md",
+    "agents/scenario-runner.md",
+    "agents/scenario-analyzer.md",
+    "agents/log-watcher.md",
+    "agents/reviewer.md"
+  ],
+  "claudeCode": {
+    "minVersion": "2.1.110"
+  }
+}
