@@ -51,6 +51,79 @@ You also receive a `scope` field on your work unit: `common`, `fabric-only`, or 
 
 Behave as before. You have a single source tree (`src/main/java/`), no `scope` distinction, no `common/` directory. The matrix has one target; the rules in the rest of this prompt that don't mention multiloader still apply (idempotency, validation cadence, NeoForge landmines, test tiers, etc.).
 
+### Multi-MC context
+
+When `layout == "multiloader-multi-mc"`, the repo has per-MC overlays under `versions/<mc>/`. Your work unit will carry an extended `scope` (`top-common`, `per-mc-common`, `per-mc-fabric`, `per-mc-neoforge`) plus an `mc_versions` array (for any `per-mc-*` scope). See `references/multiloader-layout.md` under "Multi-MC layout" for the canonical tree.
+
+**Where to write code by scope:**
+
+- `scope: top-common` → `common/src/main/java/<pkg>/...` (top-level, written once, shared by every MC line).
+- `scope: per-mc-common` with `mc_versions: ["1.21.1", "26.1.2"]` → `versions/1.21.1/common/src/main/java/<pkg>/...` **and** `versions/26.1.2/common/src/main/java/<pkg>/...`. Write **one copy per listed MC**. If the architect listed multiple MCs in one work unit, write the same code into each `versions/<mc>/common/` directory; if APIs diverge between the listed MCs, escalate (the architect should have forked the work unit).
+- `scope: per-mc-fabric` with `mc_versions: [...]` → `versions/<mc>/fabric/src/main/java/<pkg>/fabric/...` per listed MC.
+- `scope: per-mc-neoforge` with `mc_versions: [...]` → `versions/<mc>/neoforge/src/main/java/<pkg>/neoforge/...` per listed MC.
+
+**Top-level common rule (hard fail).** Pure Java **only**. Importing `net.minecraft.*`, `net.fabricmc.*`, or `net.neoforged.*` in a `top-common` file is a hard fail (`/modsmith:doctor` enforces this via import scanning). If your `top-common` work unit turns out to need an MC class, **stop and escalate** to the architect with "this should be per-mc-common, not top-common — needs `<ClassName>` from `net.minecraft.*`." Do not silently downgrade by adding the MC import.
+
+**Forking a class between MC versions.** When the architect splits a feature with API divergence into two `per-mc-common` work units (one per MC), you write one version per affected MC into the respective `versions/<mc>/common/`. **Both files keep the same fully-qualified name** — they're alternate implementations selected at build time by which `:versions:<mc>:common` subproject the loader subproject depends on. There is no FQN collision because each loader subproject only pulls sources from its own MC's common.
+
+**ServiceLoader registration in multi-MC.** Every interface in any `common/` source set (top-level OR per-MC-common) gets impls in each loader subproject plus a `META-INF/services/` entry.
+
+- For a **top-level common** interface (e.g., `com.example.shopkeeper.DiscountSink`), the impls live in `versions/<mc>/<loader>/src/main/java/<pkg>/<loader>/` for each MC × loader combination, and the service file lives at `versions/<mc>/<loader>/src/main/resources/META-INF/services/<fqn>`. Yes — you need one impl + one service file per MC × loader pair.
+- For a **per-MC-common** interface (e.g., `com.example.shopkeeper.MCShopkeeperRegistry`), impls live in the **same MC's** loader subprojects only (`versions/<mc>/fabric/` and `versions/<mc>/neoforge/`). Don't try to share an impl across MC lines.
+
+**Tier-1 JUnit tests.** Continue to live alongside production code. For `top-common` code, tests live in `common/src/test/java/`. For `per-mc-common` code, tests live in `versions/<mc>/common/src/test/java/`. For `per-mc-fabric` / `per-mc-neoforge`, tests live under the corresponding `versions/<mc>/<loader>/src/test/java/`. Most Tier-1 tests are pure-data and should naturally land in top-common.
+
+**`gradle.properties` keys.** All per-MC version references use the `<key>_<mc_suffix>` scheme (e.g., `neoforge_version_1_21_1`, `fabric_loader_version_26_1_2`). Subproject build files read their pin via `project.findProperty('neoforge_version_1_21_1')`. The builder **never hardcodes versions** in subproject build files; if you find yourself wanting to, the suffix you need is `<mc_version_with_dots_underscored>` (e.g., `1.21.1` → `1_21_1`). The pin must exist in the root `gradle.properties` — if it doesn't, that's an orchestrator-scope edit and you should escalate.
+
+**Worked example: `ShopkeeperProfession` registry for `mc_versions: ["1.21.1", "26.1.2"]`.**
+
+If the feature has a pure-Java discount calculator and an MC-touching profession class that diverges between MCs, the file layout is:
+
+```
+common/                                                                # top-common: pure Java
+└── src/main/java/com/example/shopkeeper/
+    ├── DiscountCalculator.java                                        # No MC imports
+    └── DiscountSink.java                                              # interface
+
+versions/1.21.1/common/                                                # per-mc-common for 1.21.1
+└── src/main/java/com/example/shopkeeper/
+    └── ShopkeeperProfession.java                                      # uses 1.21.1 VillagerProfession ctor
+
+versions/26.1.2/common/                                                # per-mc-common for 26.1.2
+└── src/main/java/com/example/shopkeeper/
+    └── ShopkeeperProfession.java                                      # uses 26.1.2 VillagerProfession ctor (same FQN as above)
+
+versions/1.21.1/fabric/
+├── src/main/java/com/example/shopkeeper/fabric/
+│   ├── FabricShopkeeperInit.java                                      # calls Registry.register for 1.21.1
+│   └── FabricDiscountSink.java                                        # impl of top-common DiscountSink for 1.21.1+Fabric
+└── src/main/resources/META-INF/services/
+    └── com.example.shopkeeper.DiscountSink                            # one line: com.example.shopkeeper.fabric.FabricDiscountSink
+
+versions/1.21.1/neoforge/
+├── src/main/java/com/example/shopkeeper/neoforge/
+│   ├── NeoForgeShopkeeperInit.java                                    # DeferredRegister for 1.21.1
+│   └── NeoForgeDiscountSink.java
+└── src/main/resources/META-INF/services/
+    └── com.example.shopkeeper.DiscountSink
+
+versions/26.1.2/fabric/
+├── src/main/java/com/example/shopkeeper/fabric/
+│   ├── FabricShopkeeperInit.java
+│   └── FabricDiscountSink.java                                        # impl for 26.1.2+Fabric
+└── src/main/resources/META-INF/services/
+    └── com.example.shopkeeper.DiscountSink
+
+versions/26.1.2/neoforge/
+├── src/main/java/com/example/shopkeeper/neoforge/
+│   ├── NeoForgeShopkeeperInit.java
+│   └── NeoForgeDiscountSink.java
+└── src/main/resources/META-INF/services/
+    └── com.example.shopkeeper.DiscountSink
+```
+
+Note: `DiscountSink` is a top-common interface, but it has **four** ServiceLoader impls (one per MC × loader). `ShopkeeperProfession` exists at the same FQN in both `versions/<mc>/common/` directories — the two files diverge in their bodies but share the FQN, and each loader subproject only sees the copy from its own MC's common via `:versions:<mc>:common`.
+
 ## Idempotency contract (when invoked from `/mc-mod-develop`)
 
 The orchestrator may pass you these fields in the prompt:

@@ -154,6 +154,108 @@ json_field_int() {
   ' "$file"
 }
 
+# Read a top-level boolean field. Returns 1 if true, 0 otherwise / missing.
+json_field_bool() {
+  local file="$1"
+  local key="$2"
+  awk -v k="$key" '
+    { content = content $0 }
+    END {
+      pat = "\"" k "\""
+      idx = index(content, pat)
+      if (idx == 0) { print 0; exit }
+      rest = substr(content, idx + length(pat))
+      sub(/^[[:space:]]*:[[:space:]]*/, "", rest)
+      if (substr(rest, 1, 4) == "true") { print 1; exit }
+      print 0
+    }
+  ' "$file"
+}
+
+# Iterate the "mc_commons" array — emit one tab-separated row per element:
+#   mc_version\tsubproject\tjava_toolchain
+json_iter_mc_commons() {
+  local file="$1"
+  awk '
+    { content = content $0 }
+    END {
+      idx = index(content, "\"mc_commons\"")
+      if (idx == 0) { exit }
+      rest = substr(content, idx)
+      o = index(rest, "[")
+      if (o == 0) { exit }
+      rest = substr(rest, o + 1)
+      depth = 1
+      arr = ""
+      i = 1
+      while (i <= length(rest) && depth > 0) {
+        c = substr(rest, i, 1)
+        if (c == "[") depth += 1
+        else if (c == "]") {
+          depth -= 1
+          if (depth == 0) break
+        }
+        arr = arr c
+        i += 1
+      }
+      while (1) {
+        s = index(arr, "{")
+        if (s == 0) break
+        d = 1
+        j = s + 1
+        while (j <= length(arr) && d > 0) {
+          ch = substr(arr, j, 1)
+          if (ch == "{") d += 1
+          else if (ch == "}") d -= 1
+          j += 1
+        }
+        obj = substr(arr, s, j - s)
+        arr = substr(arr, j + 1)
+        mc   = extract_str(obj, "mc_version")
+        subp = extract_str(obj, "subproject")
+        java = extract_int(obj, "java_toolchain")
+        printf "%s\t%s\t%s\n", mc, subp, java
+      }
+    }
+    function extract_str(obj, k) {
+      pat = "\"" k "\""
+      i = index(obj, pat)
+      if (i == 0) return ""
+      r = substr(obj, i + length(pat))
+      sub(/^[[:space:]]*:[[:space:]]*/, "", r)
+      if (substr(r, 1, 4) == "null") return ""
+      if (substr(r, 1, 1) != "\"") return ""
+      r = substr(r, 2)
+      out = ""
+      ii = 1
+      while (ii <= length(r)) {
+        cc = substr(r, ii, 1)
+        if (cc == "\\") {
+          out = out substr(r, ii + 1, 1)
+          ii += 2
+        } else if (cc == "\"") {
+          break
+        } else {
+          out = out cc
+          ii += 1
+        }
+      }
+      return out
+    }
+    function extract_int(obj, k) {
+      pat = "\"" k "\""
+      i = index(obj, pat)
+      if (i == 0) return ""
+      r = substr(obj, i + length(pat))
+      sub(/^[[:space:]]*:[[:space:]]*/, "", r)
+      if (substr(r, 1, 4) == "null") return ""
+      m = match(r, /^-?[0-9]+/)
+      if (m == 0) return ""
+      return substr(r, RSTART, RLENGTH)
+    }
+  ' "$file"
+}
+
 # Iterate the "targets" array — emit one tab-separated row per element:
 #   loader\tmc_version\tloader_version\tsubproject\tjava_toolchain
 json_iter_targets() {
@@ -250,6 +352,7 @@ json_iter_targets() {
 
 LAYOUT=$(json_field_string "$TARGETS_PATH" "layout")
 COMMON_SUBPROJECT=$(json_field_string "$TARGETS_PATH" "common_subproject")
+MULTI_MC=$(json_field_bool "$TARGETS_PATH" "multi_mc")
 
 # Per-target parallel arrays
 T_LOADER=()
@@ -266,6 +369,60 @@ while IFS=$'\t' read -r loader mc lver subp java; do
   T_SUBPROJECT+=("$subp")
   T_JAVA+=("$java")
 done < <(json_iter_targets "$TARGETS_PATH")
+
+# Per-MC common subproject parallel arrays (populated only when multi_mc=1).
+MC_COMMON_MC=()
+MC_COMMON_SUBPROJECT=()
+MC_COMMON_JAVA=()
+
+while IFS=$'\t' read -r mc subp java; do
+  [ -z "$mc" ] && continue
+  MC_COMMON_MC+=("$mc")
+  MC_COMMON_SUBPROJECT+=("$subp")
+  MC_COMMON_JAVA+=("$java")
+done < <(json_iter_mc_commons "$TARGETS_PATH")
+
+# A helper: list the unique MC versions in the multi-MC matrix.
+unique_mcs() {
+  local i=0
+  local n=${#T_MC[@]}
+  local seen=""
+  while [ $i -lt $n ]; do
+    local mc="${T_MC[$i]}"
+    i=$((i + 1))
+    [ -z "$mc" ] && continue
+    case " $seen " in
+      *" $mc "*) ;;
+      *) seen="$seen $mc"; printf '%s\n' "$mc" ;;
+    esac
+  done
+  # Also include any per-MC commons that may have no loader target.
+  local k=0
+  local m=${#MC_COMMON_MC[@]}
+  while [ $k -lt $m ]; do
+    local mc="${MC_COMMON_MC[$k]}"
+    k=$((k + 1))
+    [ -z "$mc" ] && continue
+    case " $seen " in
+      *" $mc "*) ;;
+      *) seen="$seen $mc"; printf '%s\n' "$mc" ;;
+    esac
+  done
+}
+
+# A helper: convert "1.21.1" to the "1_21_1" suffix used in gradle.properties.
+mc_suffix() {
+  printf '%s' "${1//./_}"
+}
+
+# Either "multiloader" or "multiloader-multi-mc" — both are checked by the
+# multi-loader-style checks. The single-MC checks gate on LAYOUT="multiloader".
+is_any_multiloader() {
+  case "$LAYOUT" in
+    multiloader|multiloader-multi-mc) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # Map a Gradle subproject path (":fabric") to a filesystem directory under ROOT.
 subproject_dir() {
@@ -495,219 +652,266 @@ expected_java_for_mc() {
 # ----------------------------------------------------------------------------
 
 check_common_no_loader_imports() {
-  if [ "$LAYOUT" != "multiloader" ]; then
+  if ! is_any_multiloader; then
     add_finding "common-no-loader-imports" "hard_fail" "skip" "" "" \
       "skipped: layout=$LAYOUT (multiloader-only check)" ""
     return 0
   fi
-  local common_dir
-  common_dir=$(subproject_dir "$COMMON_SUBPROJECT")
-  if [ -z "$common_dir" ] || [ ! -d "$common_dir/src/main/java" ]; then
+
+  # Gather every common-style directory to walk:
+  #   - top-level :common (both multiloader and multi-MC)
+  #   - per-MC :versions:<mc>:common (multi-MC only)
+  local dirs=()
+  local labels=()
+  local cdir
+  cdir=$(subproject_dir "$COMMON_SUBPROJECT")
+  if [ -n "$cdir" ] && [ -d "$cdir/src/main/java" ]; then
+    dirs+=("$cdir/src/main/java")
+    labels+=("$cdir")
+  fi
+  if [ "$MULTI_MC" = "1" ]; then
+    local k=0
+    local m=${#MC_COMMON_MC[@]}
+    while [ $k -lt $m ]; do
+      local subp="${MC_COMMON_SUBPROJECT[$k]}"
+      k=$((k + 1))
+      local d
+      d=$(subproject_dir "$subp")
+      [ -n "$d" ] && [ -d "$d/src/main/java" ] && {
+        dirs+=("$d/src/main/java")
+        labels+=("$d")
+      }
+    done
+  fi
+
+  if [ ${#dirs[@]} -eq 0 ]; then
     add_finding "common-no-loader-imports" "hard_fail" "skip" "" "" \
-      "skipped: no common/src/main/java directory" ""
+      "skipped: no common/src/main/java directory (top-level or per-MC)" ""
     return 0
   fi
 
   local any_fail=0
-  while IFS= read -r -d '' f; do
-    # Pull any `import net.fabricmc...;` or `import net.neoforged...;` line.
-    while IFS=: read -r lineno line; do
-      [ -z "$lineno" ] && continue
-      local msg="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-      add_finding "common-no-loader-imports" "hard_fail" "fail" \
-        "$f" "$lineno" \
-        "$msg in common/ — loader APIs forbidden in common" \
-        "Move this code to a platform helper interface in common/.../platform/ (see references/expect-actual-pattern.md) or to the appropriate loader subproject"
-      any_fail=1
-    done < <(grep -nE '^[[:space:]]*import[[:space:]]+net\.(fabricmc|neoforged)\.' "$f" 2>/dev/null || true)
-  done < <(find "$common_dir/src/main/java" -type f -name '*.java' -print0 2>/dev/null)
+  local idx=0
+  while [ $idx -lt ${#dirs[@]} ]; do
+    local d="${dirs[$idx]}"
+    local label="${labels[$idx]}"
+    idx=$((idx + 1))
+    while IFS= read -r -d '' f; do
+      while IFS=: read -r lineno line; do
+        [ -z "$lineno" ] && continue
+        local msg="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        add_finding "common-no-loader-imports" "hard_fail" "fail" \
+          "$f" "$lineno" \
+          "$msg in $label/ — loader APIs forbidden in common" \
+          "Move this code to a platform helper interface in $label/.../platform/ (see references/expect-actual-pattern.md) or to the appropriate loader subproject"
+        any_fail=1
+      done < <(grep -nE '^[[:space:]]*import[[:space:]]+net\.(fabricmc|neoforged)\.' "$f" 2>/dev/null || true)
+    done < <(find "$d" -type f -name '*.java' -print0 2>/dev/null)
+  done
 
   if [ $any_fail -eq 0 ]; then
+    local scope="common/src/main/java"
+    [ "$MULTI_MC" = "1" ] && scope="top-level :common and every :versions:<mc>:common"
     add_finding "common-no-loader-imports" "hard_fail" "pass" "" "" \
-      "no loader-specific imports under $common_dir/src/main/java" ""
+      "no loader-specific imports under $scope" ""
   fi
 }
 
 # ----------------------------------------------------------------------------
 # Check 1 + 2: platform-interface-impl-coverage + services-meta-inf-registration
 #
-# Combined so we only walk the common platform/ directory once.
+# For each interface declared in a `platform/` directory under any common
+# module, verify (a) there's an impl in every applicable loader subproject
+# and (b) the META-INF/services/ registration is present + valid.
+#
+# Multi-MC: a top-level :common interface needs impls in EVERY (mc, loader)
+# pair; a :versions:<mc>:common interface only needs impls in that MC line's
+# loader subprojects.
 # ----------------------------------------------------------------------------
 
-check_platform_coverage_and_services() {
-  if [ "$LAYOUT" != "multiloader" ]; then
-    add_finding "platform-interface-impl-coverage" "hard_fail" "skip" "" "" \
-      "skipped: layout=$LAYOUT (multiloader-only check)" ""
-    add_finding "services-meta-inf-registration" "hard_fail" "skip" "" "" \
-      "skipped: layout=$LAYOUT (multiloader-only check)" ""
+# Inner helper for coverage/services: given a platform-interface .java file
+# and a list of (loader, subdir) pairs, verify impl + services. Writes
+# findings; sets the two outer "any_*_fail" via globals so we can summarize.
+__plat_check_interface() {
+  local f="$1"; shift
+  local base; base=$(basename "$f" .java)
+
+  # Skip Services.java (the wrapper) by name convention.
+  if [ "$base" = "Services" ]; then return 0; fi
+  # Verify the file actually declares `public interface <base>`.
+  if ! grep -qE "^[[:space:]]*public[[:space:]]+interface[[:space:]]+${base}([[:space:]<{]|$)" "$f"; then
     return 0
   fi
+  PLAT_FOUND_INTERFACES=1
 
-  local common_dir
-  common_dir=$(subproject_dir "$COMMON_SUBPROJECT")
-  if [ -z "$common_dir" ]; then
-    add_finding "platform-interface-impl-coverage" "hard_fail" "skip" "" "" \
-      "skipped: multiloader layout has no :common subproject" ""
-    add_finding "services-meta-inf-registration" "hard_fail" "skip" "" "" \
-      "skipped: multiloader layout has no :common subproject" ""
-    return 0
-  fi
+  # Derive FQN from package + class name.
+  local pkg
+  pkg=$(awk '/^[[:space:]]*package[[:space:]]+/ {
+    sub(/^[[:space:]]*package[[:space:]]+/, "")
+    sub(/;.*$/, "")
+    gsub(/[[:space:]]/, "")
+    print
+    exit
+  }' "$f")
+  local fqn=""
+  if [ -n "$pkg" ]; then fqn="${pkg}.${base}"; else fqn="$base"; fi
 
-  # Find all platform interfaces under common.
-  # We look at any .java file under common/.../platform/, then read the
-  # public interface declaration; we exclude Services.java and any helpers
-  # that are not actually interfaces.
-  local platform_glob="$common_dir/src/main/java"
-  if [ ! -d "$platform_glob" ]; then
-    add_finding "platform-interface-impl-coverage" "hard_fail" "skip" "" "" \
-      "skipped: no common/src/main/java" ""
-    add_finding "services-meta-inf-registration" "hard_fail" "skip" "" "" \
-      "skipped: no common/src/main/java" ""
-    return 0
-  fi
+  # The remaining args are pairs: loader, subdir, loader, subdir, ...
+  while [ $# -gt 0 ]; do
+    local loader="$1"; shift
+    local subdir="$1"; shift
+    [ -z "$subdir" ] && continue
 
-  local any_coverage_fail=0
-  local any_services_fail=0
-  local found_interfaces=0
-
-  # Enumerate every directory literally called "platform" under common.
-  while IFS= read -r -d '' pdir; do
-    while IFS= read -r -d '' f; do
-      local base
-      base=$(basename "$f" .java)
-      # Skip Services.java (the wrapper) by name convention.
-      if [ "$base" = "Services" ]; then
-        continue
-      fi
-      # Verify the file actually declares `public interface <base>`.
-      if ! grep -qE "^[[:space:]]*public[[:space:]]+interface[[:space:]]+${base}([[:space:]<{]|$)" "$f"; then
-        continue
-      fi
-      found_interfaces=1
-      # Derive FQN from package + class name.
-      local pkg
-      pkg=$(awk '/^[[:space:]]*package[[:space:]]+/ {
+    # (a) impl class
+    local impl_match=""
+    if [ -d "$subdir/src/main/java" ]; then
+      impl_match=$( { grep -rlE "implements[[:space:]]+([A-Za-z0-9_.]+\\.)?${base}([[:space:]<,{]|$)" \
+        "$subdir/src/main/java" 2>/dev/null || true; } | head -1)
+    fi
+    if [ -z "$impl_match" ]; then
+      add_finding "platform-interface-impl-coverage" "hard_fail" "fail" \
+        "$f" "" \
+        "interface $fqn has no impl in $loader subproject ($subdir)" \
+        "Add a class under $subdir/src/main/java that declares 'implements $base' and register it via META-INF/services/$fqn"
+      PLAT_ANY_COVERAGE_FAIL=1
+    else
+      local impl_base impl_pkg impl_fqn
+      impl_base=$(basename "$impl_match" .java)
+      impl_pkg=$(awk '/^[[:space:]]*package[[:space:]]+/ {
         sub(/^[[:space:]]*package[[:space:]]+/, "")
         sub(/;.*$/, "")
         gsub(/[[:space:]]/, "")
         print
         exit
-      }' "$f")
-      local fqn=""
-      if [ -n "$pkg" ]; then
-        fqn="${pkg}.${base}"
+      }' "$impl_match")
+      if [ -n "$impl_pkg" ]; then impl_fqn="${impl_pkg}.${impl_base}"; else impl_fqn="$impl_base"; fi
+
+      local svc_file="$subdir/src/main/resources/META-INF/services/$fqn"
+      if [ ! -f "$svc_file" ]; then
+        add_finding "services-meta-inf-registration" "hard_fail" "fail" \
+          "$svc_file" "" \
+          "$loader: missing META-INF/services/$fqn registering an impl of $fqn" \
+          "Create $svc_file with one line: $impl_fqn"
+        PLAT_ANY_SERVICES_FAIL=1
       else
-        fqn="$base"
-      fi
-
-      # For each loader target, check (a) impl present and (b) services file valid.
-      local i=0
-      local n=${#T_LOADER[@]}
-      while [ $i -lt $n ]; do
-        local loader="${T_LOADER[$i]}"
-        local subdir
-        subdir=$(subproject_dir "${T_SUBPROJECT[$i]}")
-        i=$((i + 1))
-        [ -z "$subdir" ] && continue
-
-        # (a) impl class: any .java under <subdir>/src/main/java that says `implements <base>`
-        local impl_match=""
-        if [ -d "$subdir/src/main/java" ]; then
-          # `head -1` exits early → SIGPIPE on grep. Wrap to satisfy pipefail.
-          impl_match=$( { grep -rlE "implements[[:space:]]+([A-Za-z0-9_.]+\\.)?${base}([[:space:]<,{]|$)" \
-            "$subdir/src/main/java" 2>/dev/null || true; } | head -1)
-        fi
-        if [ -z "$impl_match" ]; then
-          add_finding "platform-interface-impl-coverage" "hard_fail" "fail" \
-            "$f" "" \
-            "interface $fqn has no impl in $loader subproject ($subdir)" \
-            "Add a class under $subdir/src/main/java that declares 'implements $base' and register it via META-INF/services/$fqn"
-          any_coverage_fail=1
+        local listed
+        listed=$(awk '
+          /^[[:space:]]*#/ { next }
+          /^[[:space:]]*$/ { next }
+          { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit }
+        ' "$svc_file")
+        if [ -z "$listed" ]; then
+          add_finding "services-meta-inf-registration" "hard_fail" "fail" \
+            "$svc_file" "" \
+            "$loader: META-INF/services/$fqn is empty" \
+            "Write the FQN of the impl class on a single line (e.g. $impl_fqn)"
+          PLAT_ANY_SERVICES_FAIL=1
+        elif ! printf '%s' "$listed" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$'; then
+          add_finding "services-meta-inf-registration" "hard_fail" "fail" \
+            "$svc_file" "" \
+            "$loader: META-INF/services/$fqn first line is not a valid Java FQN: '$listed'" \
+            "Replace with the impl class FQN (e.g. $impl_fqn)"
+          PLAT_ANY_SERVICES_FAIL=1
         else
-          # Derive impl FQN by reading the impl file's package + class name.
-          local impl_base
-          impl_base=$(basename "$impl_match" .java)
-          local impl_pkg
-          impl_pkg=$(awk '/^[[:space:]]*package[[:space:]]+/ {
-            sub(/^[[:space:]]*package[[:space:]]+/, "")
-            sub(/;.*$/, "")
-            gsub(/[[:space:]]/, "")
-            print
-            exit
-          }' "$impl_match")
-          local impl_fqn
-          if [ -n "$impl_pkg" ]; then
-            impl_fqn="${impl_pkg}.${impl_base}"
-          else
-            impl_fqn="$impl_base"
-          fi
-
-          # (b) services file: <subdir>/src/main/resources/META-INF/services/<fqn>
-          local svc_file="$subdir/src/main/resources/META-INF/services/$fqn"
-          if [ ! -f "$svc_file" ]; then
+          local impl_path
+          impl_path="$subdir/src/main/java/$(printf '%s' "$listed" | sed 's|\.|/|g').java"
+          if [ ! -f "$impl_path" ]; then
             add_finding "services-meta-inf-registration" "hard_fail" "fail" \
               "$svc_file" "" \
-              "$loader: missing META-INF/services/$fqn registering an impl of $fqn" \
-              "Create $svc_file with one line: $impl_fqn"
-            any_services_fail=1
-          else
-            # Confirm the file lists a real FQN that names an impl class.
-            local listed
-            listed=$(awk '
-              /^[[:space:]]*#/ { next }
-              /^[[:space:]]*$/ { next }
-              {
-                sub(/^[[:space:]]+/, "")
-                sub(/[[:space:]]+$/, "")
-                print
-                exit
-              }
-            ' "$svc_file")
-            if [ -z "$listed" ]; then
-              add_finding "services-meta-inf-registration" "hard_fail" "fail" \
-                "$svc_file" "" \
-                "$loader: META-INF/services/$fqn is empty" \
-                "Write the FQN of the impl class on a single line (e.g. $impl_fqn)"
-              any_services_fail=1
-            elif ! printf '%s' "$listed" | grep -qE '^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$'; then
-              add_finding "services-meta-inf-registration" "hard_fail" "fail" \
-                "$svc_file" "" \
-                "$loader: META-INF/services/$fqn first line is not a valid Java FQN: '$listed'" \
-                "Replace with the impl class FQN (e.g. $impl_fqn)"
-              any_services_fail=1
-            else
-              # Sanity: confirm the listed FQN actually exists as a .java
-              # file in the loader subproject. (Soft sanity check — surfaces
-              # typos that would runtime-explode.)
-              local impl_path
-              impl_path="$subdir/src/main/java/$(printf '%s' "$listed" | sed 's|\.|/|g').java"
-              if [ ! -f "$impl_path" ]; then
-                add_finding "services-meta-inf-registration" "hard_fail" "fail" \
-                  "$svc_file" "" \
-                  "$loader: META-INF/services/$fqn references $listed but $impl_path does not exist" \
-                  "Either rename the file/class, or fix the line in $svc_file to match the actual impl"
-                any_services_fail=1
-              fi
-            fi
+              "$loader: META-INF/services/$fqn references $listed but $impl_path does not exist" \
+              "Either rename the file/class, or fix the line in $svc_file to match the actual impl"
+            PLAT_ANY_SERVICES_FAIL=1
           fi
         fi
-      done
-    done < <(find "$pdir" -maxdepth 1 -type f -name '*.java' -print0 2>/dev/null)
-  done < <(find "$platform_glob" -type d -name platform -print0 2>/dev/null)
+      fi
+    fi
+  done
+}
 
-  if [ $found_interfaces -eq 0 ]; then
+check_platform_coverage_and_services() {
+  if ! is_any_multiloader; then
     add_finding "platform-interface-impl-coverage" "hard_fail" "skip" "" "" \
-      "skipped: no public interfaces found under common/.../platform/" ""
+      "skipped: layout=$LAYOUT (multiloader-only check)" ""
     add_finding "services-meta-inf-registration" "hard_fail" "skip" "" "" \
-      "skipped: no interfaces under common/.../platform/ to register" ""
+      "skipped: layout=$LAYOUT (multiloader-only check)" ""
     return 0
   fi
 
-  if [ $any_coverage_fail -eq 0 ]; then
-    add_finding "platform-interface-impl-coverage" "hard_fail" "pass" "" "" \
-      "every common/.../platform/ interface has an impl in each loader subproject" ""
+  # Globals consumed by the inner helper.
+  PLAT_ANY_COVERAGE_FAIL=0
+  PLAT_ANY_SERVICES_FAIL=0
+  PLAT_FOUND_INTERFACES=0
+
+  # Walk top-level :common platform interfaces against EVERY (mc, loader) target.
+  local common_dir
+  common_dir=$(subproject_dir "$COMMON_SUBPROJECT")
+  if [ -n "$common_dir" ] && [ -d "$common_dir/src/main/java" ]; then
+    # Build target pairs (loader, subdir) — all of them, since top-level
+    # interfaces must be implemented in every loader subproject.
+    local target_args=()
+    local i=0
+    local n=${#T_LOADER[@]}
+    while [ $i -lt $n ]; do
+      local subp
+      subp=$(subproject_dir "${T_SUBPROJECT[$i]}")
+      target_args+=("${T_LOADER[$i]}" "$subp")
+      i=$((i + 1))
+    done
+    while IFS= read -r -d '' pdir; do
+      while IFS= read -r -d '' f; do
+        __plat_check_interface "$f" "${target_args[@]}"
+      done < <(find "$pdir" -maxdepth 1 -type f -name '*.java' -print0 2>/dev/null)
+    done < <(find "$common_dir/src/main/java" -type d -name platform -print0 2>/dev/null)
   fi
-  if [ $any_services_fail -eq 0 ]; then
+
+  # Multi-MC: walk per-MC :versions:<mc>:common platform interfaces against
+  # only that MC's loader subprojects.
+  if [ "$MULTI_MC" = "1" ]; then
+    local k=0
+    local m=${#MC_COMMON_MC[@]}
+    while [ $k -lt $m ]; do
+      local mc="${MC_COMMON_MC[$k]}"
+      local sub="${MC_COMMON_SUBPROJECT[$k]}"
+      k=$((k + 1))
+      local pmc_dir
+      pmc_dir=$(subproject_dir "$sub")
+      [ -z "$pmc_dir" ] && continue
+      [ ! -d "$pmc_dir/src/main/java" ] && continue
+      # Build target pairs filtered to this MC.
+      local pmc_targets=()
+      local j=0
+      local jn=${#T_LOADER[@]}
+      while [ $j -lt $jn ]; do
+        if [ "${T_MC[$j]}" = "$mc" ]; then
+          local sd
+          sd=$(subproject_dir "${T_SUBPROJECT[$j]}")
+          pmc_targets+=("${T_LOADER[$j]}" "$sd")
+        fi
+        j=$((j + 1))
+      done
+      while IFS= read -r -d '' pdir; do
+        while IFS= read -r -d '' f; do
+          __plat_check_interface "$f" "${pmc_targets[@]}"
+        done < <(find "$pdir" -maxdepth 1 -type f -name '*.java' -print0 2>/dev/null)
+      done < <(find "$pmc_dir/src/main/java" -type d -name platform -print0 2>/dev/null)
+    done
+  fi
+
+  if [ $PLAT_FOUND_INTERFACES -eq 0 ]; then
+    add_finding "platform-interface-impl-coverage" "hard_fail" "skip" "" "" \
+      "skipped: no public interfaces found under any common/.../platform/" ""
+    add_finding "services-meta-inf-registration" "hard_fail" "skip" "" "" \
+      "skipped: no interfaces under any common/.../platform/ to register" ""
+    return 0
+  fi
+
+  if [ $PLAT_ANY_COVERAGE_FAIL -eq 0 ]; then
+    local scope="common/.../platform/"
+    [ "$MULTI_MC" = "1" ] && scope="every common/.../platform/ (top-level + per-MC)"
+    add_finding "platform-interface-impl-coverage" "hard_fail" "pass" "" "" \
+      "every $scope interface has an impl in each applicable loader subproject" ""
+  fi
+  if [ $PLAT_ANY_SERVICES_FAIL -eq 0 ]; then
     add_finding "services-meta-inf-registration" "hard_fail" "pass" "" "" \
       "every platform interface has a valid META-INF/services/ registration per loader" ""
   fi
@@ -718,43 +922,70 @@ check_platform_coverage_and_services() {
 # ----------------------------------------------------------------------------
 
 check_common_no_loader_deps() {
-  if [ "$LAYOUT" != "multiloader" ]; then
+  if ! is_any_multiloader; then
     add_finding "common-no-loader-deps" "hard_fail" "skip" "" "" \
       "skipped: layout=$LAYOUT (multiloader-only check)" ""
     return 0
   fi
+
+  # Gather every common build.gradle to inspect:
+  #   - top-level :common
+  #   - per-MC :versions:<mc>:common (multi-MC only)
+  local files=()
+  local labels=()
   local common_dir
   common_dir=$(subproject_dir "$COMMON_SUBPROJECT")
-  if [ -z "$common_dir" ]; then
-    add_finding "common-no-loader-deps" "hard_fail" "skip" "" "" \
-      "skipped: no :common subproject" ""
-    return 0
+  if [ -n "$common_dir" ]; then
+    local f
+    f=$(subproject_build_file "$common_dir")
+    if [ -n "$f" ]; then
+      files+=("$f")
+      labels+=("$common_dir")
+    fi
   fi
-  local f
-  f=$(subproject_build_file "$common_dir")
-  if [ -z "$f" ]; then
+  if [ "$MULTI_MC" = "1" ]; then
+    local k=0
+    local m=${#MC_COMMON_MC[@]}
+    while [ $k -lt $m ]; do
+      local sub="${MC_COMMON_SUBPROJECT[$k]}"
+      k=$((k + 1))
+      local d; d=$(subproject_dir "$sub")
+      [ -z "$d" ] && continue
+      local bf; bf=$(subproject_build_file "$d")
+      [ -n "$bf" ] && { files+=("$bf"); labels+=("$d"); }
+    done
+  fi
+
+  if [ ${#files[@]} -eq 0 ]; then
     add_finding "common-no-loader-deps" "hard_fail" "skip" "" "" \
-      "skipped: no $common_dir/build.gradle(.kts)" ""
+      "skipped: no :common or :versions:<mc>:common build files found" ""
     return 0
   fi
 
   local any=0
-  # Look for modImplementation lines referencing fabric-loader or neoforge runtime.
-  while IFS=: read -r lineno line; do
-    [ -z "$lineno" ] && continue
-    local msg="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    add_finding "common-no-loader-deps" "hard_fail" "fail" \
-      "$f" "$lineno" \
-      "common/ declares a loader runtime dep: $msg" \
-      "Move loader dependencies to fabric/ or neoforge/ build files; common/ depends only on Mojmap MC + Java"
-    any=1
-  done < <(strip_gradle_comments "$f" | \
-            grep -nE '(modImplementation|implementation).*(fabric-loader|fabric-api|net\.neoforged:neoforge|net\.neoforged\.fancymodloader|net\.fabricmc:fabric)' \
-            2>/dev/null || true)
+  local idx=0
+  while [ $idx -lt ${#files[@]} ]; do
+    local f="${files[$idx]}"
+    local label="${labels[$idx]}"
+    idx=$((idx + 1))
+    while IFS=: read -r lineno line; do
+      [ -z "$lineno" ] && continue
+      local msg="$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+      add_finding "common-no-loader-deps" "hard_fail" "fail" \
+        "$f" "$lineno" \
+        "$label/ declares a loader runtime dep: $msg" \
+        "Move loader dependencies to fabric/ or neoforge/ build files; common/ depends only on Mojmap MC + Java"
+      any=1
+    done < <(strip_gradle_comments "$f" | \
+              grep -nE '(modImplementation|implementation).*(fabric-loader|fabric-api|net\.neoforged:neoforge|net\.neoforged\.fancymodloader|net\.fabricmc:fabric)' \
+              2>/dev/null || true)
+  done
 
   if [ $any -eq 0 ]; then
+    local scope="common/build.gradle"
+    [ "$MULTI_MC" = "1" ] && scope="every common/build.gradle (top-level + per-MC)"
     add_finding "common-no-loader-deps" "hard_fail" "pass" "" "" \
-      "common/build.gradle does not depend on loader runtimes" ""
+      "$scope does not depend on loader runtimes" ""
   fi
 }
 

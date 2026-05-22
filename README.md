@@ -6,7 +6,7 @@ Scaffolds multi-loader (Fabric + NeoForge) mods, orchestrates the full dev cycle
 
 ## Status
 
-**v0.1.0 — pre-release.** All skills, agents, references, templates, and scripts are authored and committed. End-to-end proving-ground migration of a real mod is pending. Distribution via the official Claude Code marketplace will follow the proving-ground run.
+**v0.1.1 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.1.1 adds **multi-MC overlay scaffolding** (one repo targeting multiple Minecraft versions with shared common code). Distribution via the official Claude Code marketplace will follow real-world migration validation.
 
 ## What it does
 
@@ -43,7 +43,7 @@ claude plugin link ./modsmith
 
 | Skill | Purpose |
 |---|---|
-| **`/modsmith:init <modid>`** | Scaffold a new multi-loader mod. Interactive: asks for mod ID, package, loaders, MC versions. Accepts `latest`, `lts`, `recommended`, `next`, partial pins (`1.21` → `1.21.X`), and exact pins. Renders 19 templates, runs `./gradlew :fabric:build :neoforge:build` as a green-build proof. |
+| **`/modsmith:init <modid>`** | Scaffold a new multi-loader mod. Interactive: asks for mod ID, package, loaders, MC versions. Accepts `latest`, `lts`, `recommended`, `next`, partial pins (`1.21` → `1.21.X`), and exact pins. **Multi-MC mode:** pick 2+ MC versions and `init` produces the overlay layout (`common/` + `versions/<mc>/{common,fabric,neoforge}/`) so one repo targets multiple MC lines. Renders templates and runs `./gradlew build` as a green-build proof. |
 | **`/modsmith:develop <task>`** | Run the full feature dev cycle. Phases: 0 bootstrap → 1 architect → 2 research → 3 plan → 4 build → 5 doctor → 6 handoff (dev server + background gametest/log-watcher/reviewer) → 7 kick-back loop → 8 PR. Detects single-loader vs multi-loader vs monolith repos. |
 | **`/modsmith:doctor`** | Audit the current mod for multi-loader hygiene. Hard-fails on `common/` → loader imports, missing platform impls, missing `META-INF/services/` registrations, `mods.toml` (old name) presence, refmap/AT misconfigs, modid mismatches across loaders. Warns on stale pinned versions, missing `pack.mcmeta`, AT/AW parity drift. Runs as a phase gate inside `:develop`. |
 
@@ -102,12 +102,12 @@ modsmith/
 - [`jaredlll08/MultiLoader-Template`](https://github.com/jaredlll08/MultiLoader-Template) — canonical multi-loader project layout (templates seeded from the `26.1.2` branch)
 - [`Leclowndu93150/Prism`](https://github.com/Leclowndu93150/Prism) — design patterns adopted: single source of truth for versions, auto Java toolchain selection, mixin/AT/AW handling, build preconditions, config-time auditing
 
-## Known limitations (v0.1.0)
+## Known limitations
 
-- **Single MC version per scaffold.** The resolver accepts multiple MC tokens but `init` renders one `gradle.properties`. Multi-MC source forks are deferred to v0.2.0.
-- **Gradle wrapper.** `init` bootstraps the wrapper via `gradle wrapper --gradle-version 9.2` if `gradle` is on `PATH`; otherwise warns and lets the user bootstrap manually. A shipped wrapper stub is a v0.2.0 follow-up.
-- **No end-to-end migration validation yet.** v0.1.0 ships the plugin; full validation against a real-world multi-loader migration is pending.
+- **Gradle wrapper.** `init` bootstraps the wrapper via `gradle wrapper --gradle-version 9.2` if `gradle` is on `PATH`; otherwise warns and lets the user bootstrap manually. A shipped wrapper stub is a future follow-up.
+- **No end-to-end migration validation yet.** The plugin is authored end-to-end; full validation against a real-world multi-loader migration is pending.
 - **No `/modsmith:publish` skill.** Modrinth + CurseForge per-loader uploads are v0.2.0.
+- **NeoForm version placeholders.** When the resolver can't determine the exact `neoFormVersion` for a given MC, `init` writes a `<mc>-1` placeholder that the user must replace before the first `:versions:<mc>:common:build`. A future resolver enhancement will query NeoForm metadata directly.
 
 ## License
 
