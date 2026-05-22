@@ -8,18 +8,32 @@
 #
 # Stdout: one JSON document. Schema:
 #   {
-#     "layout": "multiloader" | "single-loader" | "monolith" | "unknown",
+#     "layout": "multiloader" | "multiloader-multi-mc" | "single-loader"
+#             | "monolith" | "unknown",
+#     "multi_mc": true | false,
 #     "common_subproject": ":common" | null,
+#     "mc_commons": [    // per-MC :versions:<mc>:common subprojects; multi-MC only.
+#       { "mc_version": "1.21.1",
+#         "subproject": ":versions:1.21.1:common",
+#         "java_toolchain": 21 }
+#     ],
 #     "targets": [
 #       { "loader": "fabric" | "neoforge" | "forge" | "quilt",
 #         "mc_version": "26.1.2",
 #         "loader_version": "0.18.6",
-#         "subproject": ":fabric",
+#         "subproject": ":fabric" | ":versions:<mc>:fabric",
 #         "java_toolchain": 25 }
 #     ],
 #     "java_toolchain": 25,
 #     "detection_notes": ["..."]
 #   }
+#
+# `layout` distinguishes the flat multi-loader layout (one set of
+# :common/:fabric/:neoforge under the root, multiloader) from the
+# overlay multi-MC layout (one :versions:<mc>:{common,fabric,neoforge}
+# tree per MC line, multiloader-multi-mc). The `multi_mc` boolean is
+# an ergonomic restatement of the layout for consumers that only need
+# to know "is this multi-MC or not".
 #
 # Exit codes:
 #   0 — at least one target detected
@@ -56,6 +70,7 @@ json_escape() {
 # ----------------------------------------------------------------------------
 
 LAYOUT="unknown"
+MULTI_MC=0              # 1 when layout=multiloader-multi-mc
 COMMON_SUBPROJECT=""    # "" means null in output
 JAVA_TOOLCHAIN=""       # integer (e.g. 21, 25); empty if unknown
 NOTES=()                # array of detection notes
@@ -66,6 +81,11 @@ TGT_MC=()
 TGT_LOADER_VER=()
 TGT_SUBPROJECT=()
 TGT_JAVA=()
+
+# Per-MC common subproject parallel arrays (multi-MC layout only).
+MC_COMMON_MC=()
+MC_COMMON_SUBPROJECT=()
+MC_COMMON_JAVA=()
 
 add_note() {
   NOTES+=("$1")
@@ -351,6 +371,30 @@ elif [ -n "$ROOT_MC" ]; then
   JAVA_TOOLCHAIN=$(derive_java_from_mc "$ROOT_MC")
 fi
 
+# Step 0: detect multi-MC overlay layout (one :versions:<mc>:{common,fabric,
+# neoforge} tree per MC line). Triggered by any included project matching
+# `:versions:<mc>:<sub>`. The presence of such projects (regardless of
+# whether they also include :fabric/:neoforge at the root) is the
+# canonical signal that the renderer used the multi-MC mode.
+MULTIMC_MC_VERSIONS=()
+if [ -n "$SETTINGS_FILE" ]; then
+  for p in "${INCLUDED_PROJECTS[@]:-}"; do
+    case "$p" in
+      :versions:*:common|:versions:*:fabric|:versions:*:neoforge|:versions:*:forge|:versions:*:quilt)
+        # Strip ":versions:" prefix and ":<sub>" suffix to recover the mc version.
+        mc_part="${p#:versions:}"
+        mc_part="${mc_part%:*}"
+        # Skip if we already have this MC.
+        seen=0
+        for m in "${MULTIMC_MC_VERSIONS[@]:-}"; do
+          [ "$m" = "$mc_part" ] && { seen=1; break; }
+        done
+        [ $seen -eq 0 ] && MULTIMC_MC_VERSIONS+=("$mc_part")
+        ;;
+    esac
+  done
+fi
+
 # Step 1: multi-loader detection via settings.gradle subprojects.
 HAS_FABRIC_SUB=0; HAS_NEOFORGE_SUB=0; HAS_FORGE_SUB=0; HAS_QUILT_SUB=0; HAS_COMMON_SUB=0
 has_subproject ":fabric"   && HAS_FABRIC_SUB=1
@@ -361,7 +405,115 @@ has_subproject ":common"   && HAS_COMMON_SUB=1
 
 LOADER_SUB_COUNT=$((HAS_FABRIC_SUB + HAS_NEOFORGE_SUB + HAS_FORGE_SUB + HAS_QUILT_SUB))
 
-if [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
+if [ ${#MULTIMC_MC_VERSIONS[@]} -gt 0 ] && [ -n "$SETTINGS_FILE" ]; then
+  # Multi-MC overlay layout: one tree per MC version under versions/<mc>/.
+  LAYOUT="multiloader-multi-mc"
+  MULTI_MC=1
+  if [ $HAS_COMMON_SUB -eq 1 ]; then
+    COMMON_SUBPROJECT=":common"
+  else
+    add_note "multi-MC layout detected but no top-level :common subproject; pure-Java shared module is missing"
+  fi
+
+  # Walk each MC line and emit (mc, loader) targets + the per-MC common entry.
+  for mc in "${MULTIMC_MC_VERSIONS[@]}"; do
+    # Convert MC version (e.g. 1.21.1) to its suffix (1_21_1) used in
+    # the per-MC gradle.properties keys.
+    mc_suffix="${mc//./_}"
+    java_for_mc=$(read_gradle_prop "gradle.properties" "java_version_$mc_suffix")
+    if [ -z "$java_for_mc" ]; then
+      java_for_mc=$(derive_java_from_mc "$mc")
+    fi
+
+    # Per-MC :common.
+    if has_subproject ":versions:$mc:common"; then
+      MC_COMMON_MC+=("$mc")
+      MC_COMMON_SUBPROJECT+=(":versions:$mc:common")
+      MC_COMMON_JAVA+=("$java_for_mc")
+    fi
+
+    # Per-MC :fabric.
+    if has_subproject ":versions:$mc:fabric"; then
+      sub_dir="versions/$mc/fabric"
+      [ -d "$sub_dir" ] || sub_dir=""
+      build_file=$(subproject_build_file "$sub_dir")
+      if [ -n "$build_file" ] && file_has_fabric_loom "$build_file"; then
+        lver=$(read_gradle_prop "gradle.properties" "fabric_loader_version_$mc_suffix")
+        if [ -z "$lver" ]; then
+          lver=$(resolve_fabric_loader_version "")
+        fi
+        TGT_LOADER+=("fabric")
+        TGT_MC+=("$mc")
+        TGT_LOADER_VER+=("$lver")
+        TGT_SUBPROJECT+=(":versions:$mc:fabric")
+        TGT_JAVA+=("$java_for_mc")
+      else
+        add_note ":versions:$mc:fabric is included but its build file does not apply fabric-loom"
+      fi
+    fi
+
+    # Per-MC :neoforge.
+    if has_subproject ":versions:$mc:neoforge"; then
+      sub_dir="versions/$mc/neoforge"
+      [ -d "$sub_dir" ] || sub_dir=""
+      build_file=$(subproject_build_file "$sub_dir")
+      if [ -n "$build_file" ] && file_has_neoforge_moddev "$build_file"; then
+        lver=$(read_gradle_prop "gradle.properties" "neoforge_version_$mc_suffix")
+        if [ -z "$lver" ]; then
+          lver=$(resolve_neoforge_version "")
+        fi
+        TGT_LOADER+=("neoforge")
+        TGT_MC+=("$mc")
+        TGT_LOADER_VER+=("$lver")
+        TGT_SUBPROJECT+=(":versions:$mc:neoforge")
+        TGT_JAVA+=("$java_for_mc")
+      else
+        add_note ":versions:$mc:neoforge is included but its build file does not apply net.neoforged.moddev"
+      fi
+    fi
+
+    # Per-MC :forge (legacy; uncommon in multi-MC but supported).
+    if has_subproject ":versions:$mc:forge"; then
+      sub_dir="versions/$mc/forge"
+      [ -d "$sub_dir" ] || sub_dir=""
+      build_file=$(subproject_build_file "$sub_dir")
+      if [ -n "$build_file" ] && file_has_forge_gradle "$build_file"; then
+        lver=$(read_gradle_prop "gradle.properties" "forge_version_$mc_suffix")
+        [ -z "$lver" ] && lver=$(resolve_forge_version "")
+        TGT_LOADER+=("forge")
+        TGT_MC+=("$mc")
+        TGT_LOADER_VER+=("$lver")
+        TGT_SUBPROJECT+=(":versions:$mc:forge")
+        TGT_JAVA+=("$java_for_mc")
+      fi
+    fi
+
+    # Per-MC :quilt.
+    if has_subproject ":versions:$mc:quilt"; then
+      sub_dir="versions/$mc/quilt"
+      [ -d "$sub_dir" ] || sub_dir=""
+      build_file=$(subproject_build_file "$sub_dir")
+      if [ -n "$build_file" ] && file_has_quilt_loom "$build_file"; then
+        lver=$(read_gradle_prop "gradle.properties" "quilt_loader_version_$mc_suffix")
+        [ -z "$lver" ] && lver=$(resolve_quilt_version "")
+        TGT_LOADER+=("quilt")
+        TGT_MC+=("$mc")
+        TGT_LOADER_VER+=("$lver")
+        TGT_SUBPROJECT+=(":versions:$mc:quilt")
+        TGT_JAVA+=("$java_for_mc")
+      fi
+    fi
+  done
+
+  # Determine the top-level :common's Java toolchain — multi-MC's top-level
+  # :common module uses java_version_shared (the highest java across all
+  # targeted MCs). Use that as the JAVA_TOOLCHAIN signal if available.
+  shared_java=$(read_gradle_prop "gradle.properties" "java_version_shared")
+  if [ -n "$shared_java" ]; then
+    JAVA_TOOLCHAIN="$shared_java"
+  fi
+
+elif [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
   LAYOUT="multiloader"
   if [ $HAS_COMMON_SUB -eq 1 ]; then
     COMMON_SUBPROJECT=":common"
@@ -474,12 +626,41 @@ emit_layout_field() {
   printf '"layout":"%s"' "$(json_escape "$LAYOUT")"
 }
 
+emit_multi_mc_field() {
+  if [ "$MULTI_MC" = "1" ]; then
+    printf '"multi_mc":true'
+  else
+    printf '"multi_mc":false'
+  fi
+}
+
 emit_common_field() {
   if [ -z "$COMMON_SUBPROJECT" ]; then
     printf '"common_subproject":null'
   else
     printf '"common_subproject":"%s"' "$(json_escape "$COMMON_SUBPROJECT")"
   fi
+}
+
+emit_mc_commons_field() {
+  printf '"mc_commons":['
+  local n=${#MC_COMMON_MC[@]}
+  local i=0
+  while [ $i -lt "$n" ]; do
+    [ $i -gt 0 ] && printf ','
+    local java_field
+    if [ -z "${MC_COMMON_JAVA[$i]}" ]; then
+      java_field='null'
+    else
+      java_field="${MC_COMMON_JAVA[$i]}"
+    fi
+    printf '{"mc_version":"%s","subproject":"%s","java_toolchain":%s}' \
+      "$(json_escape "${MC_COMMON_MC[$i]}")" \
+      "$(json_escape "${MC_COMMON_SUBPROJECT[$i]}")" \
+      "$java_field"
+    i=$((i + 1))
+  done
+  printf ']'
 }
 
 emit_targets_field() {
@@ -528,7 +709,9 @@ emit_notes_field() {
 {
   printf '{'
   emit_layout_field;       printf ','
+  emit_multi_mc_field;     printf ','
   emit_common_field;       printf ','
+  emit_mc_commons_field;   printf ','
   emit_targets_field;      printf ','
   emit_java_field;         printf ','
   emit_notes_field

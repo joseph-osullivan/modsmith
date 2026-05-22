@@ -56,6 +56,104 @@ Behave as before. `targets` will contain one entry. Don't tag work units with `s
 
 Treat as single-loader for the purposes of decomposition, but flag in `open_questions` that `detect-targets.sh` couldn't classify the layout — the orchestrator may need user input before scheduling builders.
 
+### Multi-MC context
+
+When `layout == "multiloader-multi-mc"` (the layout enum value emitted by `detect-targets.sh` for repos that scaffold per-MC overlays under `versions/<mc>/`), the `targets` matrix carries **multiple `mc_version` values**. Each MC line gets its own `versions/<mc>/common/`, `versions/<mc>/fabric/`, and `versions/<mc>/neoforge/` subtree, and the architect must reason about per-MC scoping in addition to per-loader scoping. See the canonical layout in `references/multiloader-layout.md` under "Multi-MC layout".
+
+**Work-unit scope tagging extended.** Instead of `scope: common | fabric-only | neoforge-only`, multi-MC work units use:
+
+- **`scope: top-common`** — pure-Java logic that lives in top-level `common/`. No `net.minecraft.*`, no loader imports. Shared across every MC line. Use this whenever the logic can be expressed without an MC class import (math, codecs, state machines, business rules, data structures).
+- **`scope: per-mc-common`** with `mc_versions: ["1.21.1", "26.1.2"]` — MC-touching shared code. Lives in `versions/<mc>/common/src/main/java/<pkg>/...` for each listed MC version. If the MC API is identical across the listed versions, **one work unit can list multiple MCs** (the builder will write the same code into each `versions/<mc>/common/`). If APIs diverge, decompose into **separate work units per MC** so each can adapt to its MC's API independently.
+- **`scope: per-mc-fabric`** with `mc_versions: [...]` — Fabric-specific impls for one or more MC lines. Lives in `versions/<mc>/fabric/src/main/java/<pkg>/fabric/...`. Same multi-MC-listing semantics as per-mc-common.
+- **`scope: per-mc-neoforge`** with `mc_versions: [...]` — NeoForge-specific impls. Lives in `versions/<mc>/neoforge/src/main/java/<pkg>/neoforge/...`.
+
+**Decision rule for "top-common vs per-mc-common".** If the logic can be expressed without **any** `net.minecraft.*` import, it goes in `top-common`. The moment it needs an MC class — even just `ResourceLocation` — it becomes `per-mc-common` (one copy per MC, since the MC type may not exist or may have a different shape across versions). This is the same source-of-truth rule documented in `references/multiloader-layout.md`; encode it in your decomposition.
+
+**API divergence handling.** When a feature interacts with an MC API that has changed between target MC versions (renamed class, moved package, changed method signature), the architect must:
+
+1. **Flag the divergence** in `critical_notes` (e.g., "Zombie moved from `monster.Zombie` to `monster.zombie.Zombie` in MC 26.1 — work-unit task-3 forks").
+2. **Decompose into separate per-mc-common work units per affected MC**, each adapting to its MC's API. Share as much code as possible (e.g., keep helper math in top-common; only the MC-touching glue forks).
+3. **Reference `references/landmines.md`** for known API renames between target MC versions when scoping the divergence.
+
+When in doubt, default to **separate per-MC work units** rather than a single multi-MC unit. The builder can copy-paste two identical files faster than it can untangle a unit that turns out to have divergence partway through.
+
+**`play-expectations.json` under multi-MC.** Still emit **one** `play-expectations.json` per feature, not per MC. The `log-watcher` agent runs against whatever MC line the player is dev-server'ing on, so the patterns are MC-agnostic by nature. Note in the file's `note` fields if a particular pattern is expected to differ across MC versions (rare).
+
+**Worked example: "add a shopkeeper villager" for `mc_versions: ["1.21.1", "26.1.2"]`.**
+
+```jsonc
+{
+  "subtasks": [
+    {
+      "id": "task-1",
+      "name": "Discount math + reputation tier state",
+      "scope": "top-common",
+      "description": "Pure-Java discount calculator and ReputationTier enum. No MC types.",
+      "files_to_create": ["common/src/main/java/com/example/shopkeeper/DiscountCalculator.java",
+                          "common/src/main/java/com/example/shopkeeper/ReputationTier.java"],
+      "test_tier": "tier-1"
+    },
+    {
+      "id": "task-2",
+      "name": "ShopkeeperProfession registration (1.21.1)",
+      "scope": "per-mc-common",
+      "mc_versions": ["1.21.1"],
+      "description": "VillagerProfession constructor + PoiType binding for 1.21.1's pre-rename APIs.",
+      "files_to_create": ["versions/1.21.1/common/src/main/java/com/example/shopkeeper/ShopkeeperProfession.java"],
+      "depends_on": ["task-1"]
+    },
+    {
+      "id": "task-3",
+      "name": "ShopkeeperProfession registration (26.1.2)",
+      "scope": "per-mc-common",
+      "mc_versions": ["26.1.2"],
+      "description": "VillagerProfession constructor + PoiType binding for 26.1.2 (Block.Properties takes id before construction).",
+      "files_to_create": ["versions/26.1.2/common/src/main/java/com/example/shopkeeper/ShopkeeperProfession.java"],
+      "depends_on": ["task-1"]
+    },
+    {
+      "id": "task-4",
+      "name": "Trade-offer codec",
+      "scope": "per-mc-common",
+      "mc_versions": ["1.21.1", "26.1.2"],
+      "description": "MerchantOffer codec — API is identical across both MCs, so one work unit writes both copies.",
+      "files_to_create": ["versions/1.21.1/common/src/main/java/com/example/shopkeeper/TradeOfferCodec.java",
+                          "versions/26.1.2/common/src/main/java/com/example/shopkeeper/TradeOfferCodec.java"],
+      "depends_on": ["task-1"]
+    },
+    {
+      "id": "task-5",
+      "name": "Fabric villager-profession registration",
+      "scope": "per-mc-fabric",
+      "mc_versions": ["1.21.1", "26.1.2"],
+      "description": "Fabric Registry.register call site. API stable across both MCs.",
+      "files_to_create": ["versions/1.21.1/fabric/src/main/java/com/example/shopkeeper/fabric/FabricShopkeeperInit.java",
+                          "versions/26.1.2/fabric/src/main/java/com/example/shopkeeper/fabric/FabricShopkeeperInit.java"],
+      "depends_on": ["task-2", "task-3"]
+    },
+    {
+      "id": "task-6",
+      "name": "NeoForge villager-profession registration",
+      "scope": "per-mc-neoforge",
+      "mc_versions": ["1.21.1", "26.1.2"],
+      "description": "DeferredRegister<VillagerProfession>. Identical pattern across both MCs.",
+      "files_to_create": ["versions/1.21.1/neoforge/src/main/java/com/example/shopkeeper/neoforge/NeoForgeShopkeeperInit.java",
+                          "versions/26.1.2/neoforge/src/main/java/com/example/shopkeeper/neoforge/NeoForgeShopkeeperInit.java"],
+      "depends_on": ["task-2", "task-3"]
+    }
+  ],
+  "critical_notes": "MC API divergence: VillagerProfession constructor signature differs between 1.21.1 and 26.1.2 (Block.Properties registry-id ordering changed). task-2 and task-3 fork; task-4/5/6 keep one work unit each because their APIs are stable across both MCs."
+}
+```
+
+Note how `task-1` lives in top-common (pure Java), `task-2`/`task-3` fork by MC because of API divergence, and `task-4`/`task-5`/`task-6` each cover both MCs in a single work unit because their APIs are stable. This is the typical shape: most work is multi-MC; only the divergent surfaces fork.
+
+**Field reminders for multi-MC.** When `layout == "multiloader-multi-mc"`:
+
+- `subtasks[].scope` MUST be one of `top-common`, `per-mc-common`, `per-mc-fabric`, `per-mc-neoforge`.
+- `subtasks[].mc_versions` is REQUIRED for any `per-mc-*` scope (array of MC version strings drawn from `targets[].mc_version`). OMIT it for `top-common`.
+- `files_to_modify` / `files_to_create` paths follow the layout: top-common starts with `common/`; per-mc-* starts with `versions/<mc>/common/`, `versions/<mc>/fabric/`, or `versions/<mc>/neoforge/` and **must include one entry per listed MC version** (the builder needs to know all the destinations up front).
+
 ## Play-expectations output (additional artifact)
 
 In addition to your work-unit plan, you MUST emit a sibling file **`play-expectations.json`** in the same run directory. This file is consumed by the `log-watcher` agent during the dev-server handoff phase to validate that the dev server's play session produces the log lines the feature spec implies (and avoids the log lines the spec implies it shouldn't).

@@ -1,35 +1,75 @@
 #!/bin/bash
 # expand-templates.sh — render every template in $MODSMITH_DIR/templates/ to
-# its canonical target path under <out>, substituting `{{var}}` tokens from
-# the supplied vars JSON.
+# its canonical target path under <out>, substituting `{{var}}` tokens and
+# `{{#section}}...{{/section}}` blocks from the supplied vars JSON.
 #
 # Usage:
 #   expand-templates.sh --vars <path/to/vars.json> --out <target_dir>
 #
-# vars.json schema (single object — all values are strings unless noted):
+# Mode detection:
+#   The renderer operates in one of two modes, chosen automatically by
+#   inspecting `vars.json`:
+#
+#   - **single-MC**  — selected when vars has no `mc_versions` array OR the
+#     array has exactly one entry. Renders the flat top-level layout
+#     (modid/common, modid/fabric, modid/neoforge) using the
+#     templates at $MODSMITH_DIR/templates/*.mustache. This is the
+#     unchanged v0.1.0 behavior.
+#
+#   - **multi-MC**   — selected when vars has `mc_versions` array with 2+
+#     entries. Renders the multi-MC layout:
+#         common/                              # pure-Java, MC-agnostic
+#         versions/<mc>/common/                # MC-touching shared per MC
+#         versions/<mc>/fabric/                # Loom per MC
+#         versions/<mc>/neoforge/              # MDG per MC
+#     using templates at $MODSMITH_DIR/templates/multimc/*.mustache for
+#     the build/settings/properties files, and the same per-loader
+#     templates for Java sources + manifests (each rendered per MC ×
+#     loader with that MC's pins flattened into the context).
+#
+# vars.json (single-MC schema) — unchanged from v0.1.0:
 #   {
-#     "modid":                "testmod",
-#     "mod_name":             "Test Mod",
-#     "mod_version":          "0.1.0",
-#     "description":          "An example mod",
-#     "license":              "MIT",
-#     "authors":              "alice",
-#     "package_base":         "com.example.testmod",
-#     "package_base_path":    "com/example/testmod",   // derived
-#     "mc_version":           "26.1.2",
-#     "mc_version_range":     "[26.1.2,)",              // derived
-#     "java_version":         "25",                     // string
-#     "fabric_loader_version":   "0.19.2",
-#     "fabric_api_version":      "0.149.1+26.1.2",
-#     "neoforge_version":        "26.1.2.64-beta",
-#     "neoforge_loader_version_range": "[4,)",
-#     "parchment_mc_version":    "1.21.1",
-#     "parchment_version":       "2024.11.17",
-#     "loaders":              ["fabric","neoforge"]      // array — controls skips
+#     "modid": "testmod", "mod_name": "Test Mod", ...,
+#     "mc_version": "26.1.2", "java_version": "25",
+#     "fabric_loader_version": "0.19.2", "fabric_api_version": "0.149.1+26.1.2",
+#     "neoforge_version": "26.1.2.64-beta",
+#     "parchment_mc_version": "1.21.1", "parchment_version": "2024.11.17",
+#     "loaders": ["fabric","neoforge"]
 #   }
 #
-# `loaders` controls which loader-specific templates are rendered. Common
-# templates are always rendered.
+# vars.json (multi-MC schema):
+#   {
+#     "modid": "testmod", "mod_name": "Test Mod", ...,
+#     "java_version_shared": "25",   // highest Java across MCs; top-level common uses this
+#     "loaders": ["fabric","neoforge"],
+#     "mc_versions": [
+#       {
+#         "mc_version": "1.21.1",
+#         "mc_suffix":  "1_21_1",          // dots→underscores, used for gradle.properties keys
+#         "java_version": "21",
+#         "neoform_version": "1.21.1-20240808.144430",
+#         "neoforge_version": "21.1.230",
+#         "fabric_loader_version": "0.16.10",
+#         "fabric_api_version": "0.111.0+1.21.1",
+#         "parchment_mc_version": "1.21.1",
+#         "parchment_version": "2024.11.17",
+#         "has_fabric": true,
+#         "has_neoforge": true,
+#         "has_parchment": true
+#       },
+#       {
+#         "mc_version": "26.1.2",
+#         "mc_suffix": "26_1_2",
+#         ...
+#       }
+#     ]
+#   }
+#
+# Mustache subset implementation: a small custom renderer at
+# scripts/_mustache.py supporting `{{var}}`, `{{#section}}...{{/section}}`,
+# and `{{^section}}...{{/section}}`. Hand-rolled to keep modsmith's
+# install surface to (jq, python3) only — no pip, no chevron, no mustache
+# binary. See _mustache.py for details.
 #
 # Exit codes:
 #   0 — every template rendered, no unresolved {{...}} tokens remain
@@ -40,6 +80,8 @@
 
 MODSMITH_DIR="${MODSMITH_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 TEMPLATES_DIR="${MODSMITH_TEMPLATES_DIR:-$MODSMITH_DIR/templates}"
+MULTIMC_TEMPLATES_DIR="$TEMPLATES_DIR/multimc"
+SCRIPTS_DIR="$(dirname "${BASH_SOURCE[0]}")"
 
 VARS_FILE=""
 OUT_DIR=""
@@ -74,63 +116,37 @@ if [ ! -d "$TEMPLATES_DIR" ]; then
   exit 1
 fi
 
-mkdir -p "$OUT_DIR"
-
-# ---------------------------------------------------------------------------
-# Load + derive vars
-# ---------------------------------------------------------------------------
-
-# Validate JSON.
 if ! jq -e . "$VARS_FILE" >/dev/null 2>&1; then
   warn "vars file is not valid JSON: $VARS_FILE"
   exit 2
 fi
 
-# Pull all string-typed scalars into a flat KEY=VALUE map for sed-substitution.
-# Object/array values are skipped here (loaders[] handled separately).
-declare -a VAR_KEYS=()
-declare -a VAR_VALUES=()
+mkdir -p "$OUT_DIR"
 
-while IFS=$'\t' read -r k v; do
-  VAR_KEYS+=("$k")
-  VAR_VALUES+=("$v")
-done < <(jq -r '
-  to_entries
-  | map(select(.value | type == "string" or type == "number"))
-  | .[]
-  | "\(.key)\t\(.value | tostring)"
-' "$VARS_FILE")
+# ---------------------------------------------------------------------------
+# Mode detection
+# ---------------------------------------------------------------------------
 
-# Loaders array as a space-separated list.
-LOADERS_LIST=$(jq -r '.loaders | if type == "array" then join(" ") else "fabric neoforge" end' "$VARS_FILE")
+MC_COUNT=$(jq -r '
+  if has("mc_versions") and (.mc_versions | type) == "array"
+  then (.mc_versions | length)
+  else 0
+  end' "$VARS_FILE")
 
-# Derive package_base_path from package_base if not already present.
+if [ "$MC_COUNT" -ge 2 ]; then
+  MODE="multimc"
+else
+  MODE="single"
+fi
+
+# Shared values we need in shell for path construction.
 PACKAGE_BASE=$(jq -r '.package_base // ""' "$VARS_FILE")
 PACKAGE_BASE_PATH=$(jq -r '.package_base_path // ""' "$VARS_FILE")
 if [ -z "$PACKAGE_BASE_PATH" ] && [ -n "$PACKAGE_BASE" ]; then
   PACKAGE_BASE_PATH=$(printf '%s' "$PACKAGE_BASE" | tr '.' '/')
-  VAR_KEYS+=("package_base_path")
-  VAR_VALUES+=("$PACKAGE_BASE_PATH")
 fi
-
-# Derive mc_version_range if absent.
-MC_VERSION=$(jq -r '.mc_version // ""' "$VARS_FILE")
-MC_VERSION_RANGE=$(jq -r '.mc_version_range // ""' "$VARS_FILE")
-if [ -z "$MC_VERSION_RANGE" ] && [ -n "$MC_VERSION" ]; then
-  VAR_KEYS+=("mc_version_range")
-  VAR_VALUES+=("[$MC_VERSION,)")
-fi
-
-# Derive neoforge_loader_version_range if absent.
-NEO_RANGE=$(jq -r '.neoforge_loader_version_range // ""' "$VARS_FILE")
-if [ -z "$NEO_RANGE" ]; then
-  VAR_KEYS+=("neoforge_loader_version_range")
-  VAR_VALUES+=("[4,)")
-fi
-
-# ---------------------------------------------------------------------------
-# Renderer — substitute every {{var}} using the flat key/value arrays.
-# ---------------------------------------------------------------------------
+MODID=$(jq -r '.modid // ""' "$VARS_FILE")
+LOADERS_LIST=$(jq -r '.loaders | if type == "array" then join(" ") else "fabric neoforge" end' "$VARS_FILE")
 
 want_loader() {
   local lo="$1"
@@ -140,130 +156,207 @@ want_loader() {
   return 1
 }
 
-# Render a single template file to a target path.
-render_template() {
-  local src="$1"
-  local dst="$2"
+# ---------------------------------------------------------------------------
+# Renderer wrappers
+# ---------------------------------------------------------------------------
 
+RENDERED=()
+
+# render <src_template> <dst_path> [<inner_context.json>]
+render() {
+  local src="$1" dst="$2" inner="${3:-}"
   if [ ! -f "$src" ]; then
     warn "template missing: $src"
     return 1
   fi
-
   mkdir -p "$(dirname "$dst")"
-
-  # Use python for substitution — handles JSON-safe content cleanly without
-  # sed-escaping headaches around slashes, ampersands, and newlines in values.
-  python3 - "$src" "$dst" "$VARS_FILE" "$PACKAGE_BASE_PATH" "$MC_VERSION" <<'PYEOF'
-import json, os, re, sys
-
-src, dst, vars_path, package_base_path, mc_version = sys.argv[1:6]
-
-with open(vars_path, encoding="utf-8") as f:
-    raw = json.load(f)
-
-# Build the substitution map: include only scalar keys; add derived ones.
-subs = {}
-for k, v in raw.items():
-    if isinstance(v, (str, int, float)):
-        subs[k] = str(v)
-
-if "package_base_path" not in subs and package_base_path:
-    subs["package_base_path"] = package_base_path
-
-if "mc_version_range" not in subs and mc_version:
-    subs["mc_version_range"] = f"[{mc_version},)"
-
-if "neoforge_loader_version_range" not in subs:
-    subs["neoforge_loader_version_range"] = "[4,)"
-
-with open(src, encoding="utf-8") as f:
-    text = f.read()
-
-def replace(m):
-    key = m.group(1).strip()
-    if key in subs:
-        return subs[key]
-    # Leave unresolved tokens in place so the caller's post-check can flag them.
-    return m.group(0)
-
-# Match {{ key }} but NOT ${var} (gradle expand) or ${file.jarVersion}.
-out = re.sub(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}", replace, text)
-
-os.makedirs(os.path.dirname(dst) or ".", exist_ok=True)
-with open(dst, "w", encoding="utf-8") as f:
-    f.write(out)
-PYEOF
+  if [ -n "$inner" ]; then
+    python3 "$SCRIPTS_DIR/_render_template.py" "$src" "$dst" "$VARS_FILE" "$inner" \
+      || { warn "render failed: $src -> $dst"; return 1; }
+  else
+    python3 "$SCRIPTS_DIR/_render_template.py" "$src" "$dst" "$VARS_FILE" \
+      || { warn "render failed: $src -> $dst"; return 1; }
+  fi
+  RENDERED+=("$dst")
 }
 
-# Render + record the path so the post-check can scan all outputs.
-RENDERED=()
-render() {
-  local src="$1" dst="$2"
-  if render_template "$src" "$dst"; then
-    RENDERED+=("$dst")
-  else
-    return 1
+# ---------------------------------------------------------------------------
+# Single-MC render plan (unchanged behavior)
+# ---------------------------------------------------------------------------
+
+render_single_mc() {
+  render "$TEMPLATES_DIR/gradle.properties.mustache" "$OUT_DIR/gradle.properties"
+  render "$TEMPLATES_DIR/settings.gradle.mustache"   "$OUT_DIR/settings.gradle"
+  render "$TEMPLATES_DIR/root.build.gradle.mustache" "$OUT_DIR/build.gradle"
+  render "$TEMPLATES_DIR/common.build.gradle.mustache" "$OUT_DIR/common/build.gradle"
+
+  local common_java_dir="$OUT_DIR/common/src/main/java/$PACKAGE_BASE_PATH"
+  render "$TEMPLATES_DIR/PlatformHelper.java.mustache" "$common_java_dir/platform/IPlatformHelper.java"
+  render "$TEMPLATES_DIR/Services.java.mustache"        "$common_java_dir/platform/Services.java"
+  render "$TEMPLATES_DIR/ModInit.java.mustache"         "$common_java_dir/ModInit.java"
+
+  local common_res="$OUT_DIR/common/src/main/resources"
+  render "$TEMPLATES_DIR/accesstransformer.cfg.mustache" "$common_res/META-INF/accesstransformer.cfg"
+  render "$TEMPLATES_DIR/mixins.json.mustache"           "$common_res/${MODID}.mixins.json"
+
+  if want_loader fabric; then
+    render "$TEMPLATES_DIR/fabric.build.gradle.mustache" "$OUT_DIR/fabric/build.gradle"
+    local fab_java="$OUT_DIR/fabric/src/main/java/$PACKAGE_BASE_PATH/fabric"
+    render "$TEMPLATES_DIR/FabricModInit.java.mustache"       "$fab_java/FabricModInit.java"
+    render "$TEMPLATES_DIR/FabricPlatformHelper.java.mustache" "$fab_java/platform/FabricPlatformHelper.java"
+
+    local fab_res="$OUT_DIR/fabric/src/main/resources"
+    render "$TEMPLATES_DIR/fabric.mod.json.mustache" "$fab_res/fabric.mod.json"
+    render "$TEMPLATES_DIR/fabric-services.txt.mustache" \
+      "$fab_res/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper"
+  fi
+
+  if want_loader neoforge; then
+    render "$TEMPLATES_DIR/neoforge.build.gradle.mustache" "$OUT_DIR/neoforge/build.gradle"
+    local neo_java="$OUT_DIR/neoforge/src/main/java/$PACKAGE_BASE_PATH/neoforge"
+    render "$TEMPLATES_DIR/NeoForgeModInit.java.mustache"       "$neo_java/NeoForgeModInit.java"
+    render "$TEMPLATES_DIR/NeoForgePlatformHelper.java.mustache" "$neo_java/platform/NeoForgePlatformHelper.java"
+
+    local neo_res="$OUT_DIR/neoforge/src/main/resources"
+    render "$TEMPLATES_DIR/neoforge.mods.toml.mustache" "$neo_res/META-INF/neoforge.mods.toml"
+    render "$TEMPLATES_DIR/neoforge-services.txt.mustache" \
+      "$neo_res/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper"
   fi
 }
 
 # ---------------------------------------------------------------------------
-# Render plan
+# Multi-MC render plan
 # ---------------------------------------------------------------------------
 
-# Common / root templates (always rendered).
-render "$TEMPLATES_DIR/gradle.properties.mustache" "$OUT_DIR/gradle.properties"
-render "$TEMPLATES_DIR/settings.gradle.mustache"   "$OUT_DIR/settings.gradle"
-render "$TEMPLATES_DIR/root.build.gradle.mustache" "$OUT_DIR/build.gradle"
-render "$TEMPLATES_DIR/common.build.gradle.mustache" "$OUT_DIR/common/build.gradle"
+render_multimc() {
+  if [ ! -d "$MULTIMC_TEMPLATES_DIR" ]; then
+    warn "multi-MC templates dir not found: $MULTIMC_TEMPLATES_DIR"
+    return 1
+  fi
 
-# Common Java sources.
-COMMON_JAVA_DIR="$OUT_DIR/common/src/main/java/$PACKAGE_BASE_PATH"
-render "$TEMPLATES_DIR/PlatformHelper.java.mustache" "$COMMON_JAVA_DIR/platform/IPlatformHelper.java"
-render "$TEMPLATES_DIR/Services.java.mustache"        "$COMMON_JAVA_DIR/platform/Services.java"
-render "$TEMPLATES_DIR/ModInit.java.mustache"         "$COMMON_JAVA_DIR/ModInit.java"
+  # Root files use the full vars context (Mustache iterates mc_versions
+  # inside settings.gradle / gradle.properties).
+  render "$MULTIMC_TEMPLATES_DIR/gradle.properties.mustache" "$OUT_DIR/gradle.properties"
+  render "$MULTIMC_TEMPLATES_DIR/settings.gradle.mustache"   "$OUT_DIR/settings.gradle"
+  render "$MULTIMC_TEMPLATES_DIR/root.build.gradle.mustache" "$OUT_DIR/build.gradle"
 
-# Common resources.
-COMMON_RES="$OUT_DIR/common/src/main/resources"
-render "$TEMPLATES_DIR/accesstransformer.cfg.mustache" "$COMMON_RES/META-INF/accesstransformer.cfg"
-render "$TEMPLATES_DIR/mixins.json.mustache"           "$COMMON_RES/$(jq -r .modid "$VARS_FILE").mixins.json"
+  # Top-level :common — pure Java, MC-agnostic.
+  render "$MULTIMC_TEMPLATES_DIR/common.build.gradle.mustache" "$OUT_DIR/common/build.gradle"
+  # The top-level common has its OWN package-base-rooted directory tree for
+  # any pure-Java shared code the user adds. We don't ship any sources by
+  # default (the per-MC common modules hold the IPlatformHelper +
+  # ModInit + Services entry points), but we do ensure the source root
+  # exists so IDEs pick it up.
+  mkdir -p "$OUT_DIR/common/src/main/java/$PACKAGE_BASE_PATH"
+  mkdir -p "$OUT_DIR/common/src/main/resources"
 
-# Fabric.
-if want_loader fabric; then
-  render "$TEMPLATES_DIR/fabric.build.gradle.mustache" "$OUT_DIR/fabric/build.gradle"
-  FAB_JAVA="$OUT_DIR/fabric/src/main/java/$PACKAGE_BASE_PATH/fabric"
-  render "$TEMPLATES_DIR/FabricModInit.java.mustache"       "$FAB_JAVA/FabricModInit.java"
-  render "$TEMPLATES_DIR/FabricPlatformHelper.java.mustache" "$FAB_JAVA/platform/FabricPlatformHelper.java"
+  # For each MC row, render the per-MC subprojects.
+  local mc_count
+  mc_count=$(jq -r '.mc_versions | length' "$VARS_FILE")
+  local i=0
+  while [ "$i" -lt "$mc_count" ]; do
+    # Extract a flat per-MC context to a temp file. This includes the
+    # per-MC fields PLUS a copy of every top-level scalar from the global
+    # context (modid, package_base, mod_name, etc.), so the Java +
+    # manifest templates that reference {{modid}}, {{package_base}},
+    # {{mc_version}}, {{neoforge_version}}, etc. resolve cleanly.
+    local inner_ctx
+    inner_ctx=$(mktemp /tmp/modsmith-mc-ctx.XXXXXX.json)
 
-  FAB_RES="$OUT_DIR/fabric/src/main/resources"
-  render "$TEMPLATES_DIR/fabric.mod.json.mustache" "$FAB_RES/fabric.mod.json"
+    jq --argjson idx "$i" '
+      .mc_versions[$idx] as $row
+      | (. | to_entries | map(select(.value | type == "string" or type == "number")) | from_entries) as $globals
+      | $globals + $row
+    ' "$VARS_FILE" > "$inner_ctx"
 
-  # ServiceLoader registration. The filename IS the FQCN of the interface.
-  render "$TEMPLATES_DIR/fabric-services.txt.mustache" \
-    "$FAB_RES/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper"
-fi
+    local mc_version mc_suffix
+    mc_version=$(jq -r '.mc_version' "$inner_ctx")
+    mc_suffix=$(jq -r '.mc_suffix' "$inner_ctx")
 
-# NeoForge.
-if want_loader neoforge; then
-  render "$TEMPLATES_DIR/neoforge.build.gradle.mustache" "$OUT_DIR/neoforge/build.gradle"
-  NEO_JAVA="$OUT_DIR/neoforge/src/main/java/$PACKAGE_BASE_PATH/neoforge"
-  render "$TEMPLATES_DIR/NeoForgeModInit.java.mustache"       "$NEO_JAVA/NeoForgeModInit.java"
-  render "$TEMPLATES_DIR/NeoForgePlatformHelper.java.mustache" "$NEO_JAVA/platform/NeoForgePlatformHelper.java"
+    if [ -z "$mc_version" ] || [ "$mc_version" = "null" ]; then
+      warn "mc_versions[$i].mc_version is missing"
+      rm -f "$inner_ctx"
+      return 1
+    fi
+    if [ -z "$mc_suffix" ] || [ "$mc_suffix" = "null" ]; then
+      warn "mc_versions[$i].mc_suffix is missing"
+      rm -f "$inner_ctx"
+      return 1
+    fi
 
-  NEO_RES="$OUT_DIR/neoforge/src/main/resources"
-  render "$TEMPLATES_DIR/neoforge.mods.toml.mustache" "$NEO_RES/META-INF/neoforge.mods.toml"
+    local mc_root="$OUT_DIR/versions/$mc_version"
 
-  render "$TEMPLATES_DIR/neoforge-services.txt.mustache" \
-    "$NEO_RES/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper"
+    # ---- versions/<mc>/common ----
+    render "$MULTIMC_TEMPLATES_DIR/versions.common.build.gradle.mustache" \
+      "$mc_root/common/build.gradle" "$inner_ctx"
+
+    local mc_common_java="$mc_root/common/src/main/java/$PACKAGE_BASE_PATH"
+    render "$TEMPLATES_DIR/ModInit.java.mustache"           "$mc_common_java/ModInit.java"           "$inner_ctx"
+    render "$TEMPLATES_DIR/PlatformHelper.java.mustache"     "$mc_common_java/platform/IPlatformHelper.java" "$inner_ctx"
+    render "$TEMPLATES_DIR/Services.java.mustache"           "$mc_common_java/platform/Services.java"        "$inner_ctx"
+
+    local mc_common_res="$mc_root/common/src/main/resources"
+    render "$TEMPLATES_DIR/accesstransformer.cfg.mustache" "$mc_common_res/META-INF/accesstransformer.cfg" "$inner_ctx"
+    render "$TEMPLATES_DIR/mixins.json.mustache"           "$mc_common_res/${MODID}.mixins.json"             "$inner_ctx"
+
+    # ---- versions/<mc>/fabric ----
+    if want_loader fabric; then
+      render "$MULTIMC_TEMPLATES_DIR/versions.fabric.build.gradle.mustache" \
+        "$mc_root/fabric/build.gradle" "$inner_ctx"
+      local fab_java="$mc_root/fabric/src/main/java/$PACKAGE_BASE_PATH/fabric"
+      render "$TEMPLATES_DIR/FabricModInit.java.mustache"       "$fab_java/FabricModInit.java"       "$inner_ctx"
+      render "$TEMPLATES_DIR/FabricPlatformHelper.java.mustache" "$fab_java/platform/FabricPlatformHelper.java" "$inner_ctx"
+
+      local fab_res="$mc_root/fabric/src/main/resources"
+      render "$TEMPLATES_DIR/fabric.mod.json.mustache" "$fab_res/fabric.mod.json" "$inner_ctx"
+      render "$TEMPLATES_DIR/fabric-services.txt.mustache" \
+        "$fab_res/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper" "$inner_ctx"
+    fi
+
+    # ---- versions/<mc>/neoforge ----
+    if want_loader neoforge; then
+      render "$MULTIMC_TEMPLATES_DIR/versions.neoforge.build.gradle.mustache" \
+        "$mc_root/neoforge/build.gradle" "$inner_ctx"
+      local neo_java="$mc_root/neoforge/src/main/java/$PACKAGE_BASE_PATH/neoforge"
+      render "$TEMPLATES_DIR/NeoForgeModInit.java.mustache"       "$neo_java/NeoForgeModInit.java"       "$inner_ctx"
+      render "$TEMPLATES_DIR/NeoForgePlatformHelper.java.mustache" "$neo_java/platform/NeoForgePlatformHelper.java" "$inner_ctx"
+
+      local neo_res="$mc_root/neoforge/src/main/resources"
+      render "$TEMPLATES_DIR/neoforge.mods.toml.mustache" "$neo_res/META-INF/neoforge.mods.toml" "$inner_ctx"
+      render "$TEMPLATES_DIR/neoforge-services.txt.mustache" \
+        "$neo_res/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper" "$inner_ctx"
+    fi
+
+    rm -f "$inner_ctx"
+    i=$((i + 1))
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+if [ "$MODE" = "multimc" ]; then
+  warn "multi-MC mode: rendering $MC_COUNT MC lines × loaders [$LOADERS_LIST]"
+  if ! render_multimc; then
+    warn "multi-MC render failed"
+    exit 1
+  fi
+else
+  warn "single-MC mode"
+  if ! render_single_mc; then
+    warn "single-MC render failed"
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------
 # Gradle wrapper — copy verbatim if present, else `gradle wrapper`.
+# (Same as before — applies to both modes.)
 # ---------------------------------------------------------------------------
 
 WRAPPER_SRC="$MODSMITH_DIR/templates/gradle-wrapper"
 if [ -d "$WRAPPER_SRC" ]; then
-  # Copy entire wrapper directory.
   mkdir -p "$OUT_DIR/gradle/wrapper"
   cp -R "$WRAPPER_SRC/gradle/wrapper/." "$OUT_DIR/gradle/wrapper/" 2>/dev/null || true
   for f in gradlew gradlew.bat; do
@@ -273,14 +366,10 @@ if [ -d "$WRAPPER_SRC" ]; then
     fi
   done
 elif command -v gradle >/dev/null 2>&1; then
-  # No stub wrapper; ask the local gradle to bootstrap one. This produces the
-  # canonical gradlew/gradlew.bat + gradle/wrapper/gradle-wrapper.jar set.
   (
     cd "$OUT_DIR" || exit 1
-    # Use a tiny placeholder settings.gradle so `gradle wrapper` doesn't try
-    # to resolve our actual plugins (which would fail before the build runs).
     if [ ! -f settings.gradle.bak ]; then cp settings.gradle settings.gradle.bak; fi
-    printf "rootProject.name = '%s'\n" "$(jq -r .modid "$VARS_FILE")" > settings.gradle
+    printf "rootProject.name = '%s'\n" "$MODID" > settings.gradle
     gradle wrapper --gradle-version 9.2 --no-daemon -q || true
     mv settings.gradle.bak settings.gradle
   )
@@ -290,12 +379,12 @@ fi
 
 # ---------------------------------------------------------------------------
 # Post-check: assert no `{{name}}` placeholders survived in rendered files.
+# (Section markers should never survive either; the renderer strips them.)
 # ---------------------------------------------------------------------------
 
 UNRESOLVED=()
 for f in "${RENDERED[@]}"; do
-  # Use grep with -E; tolerate files without trailing newline.
-  matches=$(grep -onE '\{\{[ ]*[a-zA-Z_][a-zA-Z0-9_]*[ ]*\}\}' "$f" 2>/dev/null || true)
+  matches=$(grep -onE '\{\{[ ]*[#^/]?[ ]*[a-zA-Z_][a-zA-Z0-9_]*[ ]*\}\}' "$f" 2>/dev/null || true)
   if [ -n "$matches" ]; then
     while IFS= read -r m; do
       UNRESOLVED+=("$f:$m")
@@ -309,7 +398,5 @@ if [ ${#UNRESOLVED[@]} -gt 0 ]; then
   exit 1
 fi
 
-# Emit a small summary line to stderr so callers can see progress in their
-# transcripts. Stdout is reserved for callers that pipe.
-warn "rendered ${#RENDERED[@]} files into $OUT_DIR"
+warn "rendered ${#RENDERED[@]} files into $OUT_DIR ($MODE mode)"
 exit 0

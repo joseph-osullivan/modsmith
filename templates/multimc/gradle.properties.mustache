@@ -1,0 +1,39 @@
+# Single source of truth for all versions across all MC lines and loaders.
+# Each per-MC subproject reads its row via project.findProperty(...) with
+# the <key>_<mc_suffix> scheme (dots in mc version replaced by underscores).
+# Do NOT hardcode versions in any subproject build file.
+
+# Project identity
+modid={{modid}}
+mod_name={{mod_name}}
+mod_version={{mod_version}}
+group={{package_base}}
+license={{license}}
+authors={{authors}}
+description={{description}}
+
+# Top-level :common — pure Java, MC-agnostic. Toolchain set to the
+# highest Java version across all targeted MCs (so the bytecode runs on
+# every MC line's JVM).
+java_version_shared={{java_version_shared}}
+
+# NeoForge loader version range (shared across all MC lines).
+neoforge_loader_version_range=[4,)
+
+{{#mc_versions}}
+# ---- MC {{mc_version}} ({{mc_suffix}}) ----
+mc_version_{{mc_suffix}}={{mc_version}}
+java_version_{{mc_suffix}}={{java_version}}
+neoform_version_{{mc_suffix}}={{neoform_version}}
+{{#has_neoforge}}neoforge_version_{{mc_suffix}}={{neoforge_version}}
+{{/has_neoforge}}{{#has_fabric}}fabric_loader_version_{{mc_suffix}}={{fabric_loader_version}}
+fabric_api_version_{{mc_suffix}}={{fabric_api_version}}
+{{/has_fabric}}{{#has_parchment}}parchment_mc_version_{{mc_suffix}}={{parchment_mc_version}}
+parchment_version_{{mc_suffix}}={{parchment_version}}
+{{/has_parchment}}
+{{/mc_versions}}
+# Gradle
+org.gradle.jvmargs=-Xmx3G
+org.gradle.daemon=false
+org.gradle.parallel=true
+org.gradle.configuration-cache=false

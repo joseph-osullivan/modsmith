@@ -69,6 +69,61 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
     }
   ],
 
+  "phase_4_build": {
+    "stages": {
+      "4a_top_common": {
+        "builder_spawn_id": "task-spawn-abc123",
+        "started_at": "2026-05-21T19:01:12Z",
+        "completed_at": "2026-05-21T19:08:44Z",
+        "skipped": false
+      },
+      "4b_per_mc_common": [
+        {
+          "mc_version": "1.21.1",
+          "builder_spawn_id": "task-spawn-def456",
+          "started_at": "2026-05-21T19:08:50Z",
+          "completed_at": "2026-05-21T19:14:22Z"
+        },
+        {
+          "mc_version": "26.1.2",
+          "builder_spawn_id": "task-spawn-ghi789",
+          "started_at": "2026-05-21T19:08:50Z",
+          "completed_at": "2026-05-21T19:15:01Z"
+        }
+      ],
+      "4c_per_mc_loader": [
+        {
+          "mc_version": "1.21.1",
+          "loader": "fabric",
+          "builder_spawn_id": "task-spawn-jkl012",
+          "started_at": "2026-05-21T19:15:05Z",
+          "completed_at": "2026-05-21T19:21:43Z"
+        },
+        {
+          "mc_version": "1.21.1",
+          "loader": "neoforge",
+          "builder_spawn_id": "task-spawn-mno345",
+          "started_at": "2026-05-21T19:15:05Z",
+          "completed_at": "2026-05-21T19:22:11Z"
+        },
+        {
+          "mc_version": "26.1.2",
+          "loader": "fabric",
+          "builder_spawn_id": "task-spawn-pqr678",
+          "started_at": "2026-05-21T19:15:05Z",
+          "completed_at": "2026-05-21T19:21:58Z"
+        },
+        {
+          "mc_version": "26.1.2",
+          "loader": "neoforge",
+          "builder_spawn_id": "task-spawn-stu901",
+          "started_at": "2026-05-21T19:15:05Z",
+          "completed_at": "2026-05-21T19:22:37Z"
+        }
+      ]
+    }
+  },
+
   "gametest": {
     "status": "skipped | pending | complete",
     "tests_added_count": 6,
@@ -106,6 +161,7 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
   "phase_6_handoff": {
     "status": "skipped | pending | complete",
     "preferred_loader_used": "neoforge",
+    "preferred_target": ":versions:26.1.2:neoforge",
     "headless": false,
     "dev_server_started_at": "2026-05-21T19:33:01Z",
     "dev_server_ended_at": "2026-05-21T19:41:33Z",
@@ -132,7 +188,17 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
     ],
     "scenario_results": [],
     "reviewer_report_path": "runs/review.json",
-    "summary_printed": true
+    "summary_printed": true,
+    "per_mc_results": {
+      "1.21.1": {
+        "fabric":   { "tier1_passed": 14, "tier1_failed": 0, "gametest_passed": 6, "gametest_failed": 0, "scenario_passed": 2, "scenario_failed": 0 },
+        "neoforge": { "tier1_passed": 14, "tier1_failed": 0, "gametest_passed": 6, "gametest_failed": 0, "scenario_passed": 2, "scenario_failed": 0 }
+      },
+      "26.1.2": {
+        "fabric":   { "tier1_passed": 14, "tier1_failed": 0, "gametest_passed": 6, "gametest_failed": 0, "scenario_passed": 1, "scenario_failed": 1 },
+        "neoforge": { "tier1_passed": 14, "tier1_failed": 0, "gametest_passed": 6, "gametest_failed": 0, "scenario_passed": 2, "scenario_failed": 0 }
+      }
+    }
   },
 
   "kick_back_queue": [],
@@ -151,7 +217,8 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
           "loader": "common",
           "symptom": "NPE when reputation tag is missing on player",
           "suggested_fix": "Default to NEUTRAL tier when tag is absent.",
-          "severity": "hard_fail"
+          "severity": "hard_fail",
+          "target": { "loader": "neoforge", "mc_version": "26.1.2" }
         }
       ],
       "builder_output_path": "kick-back/01/builder-output.md",
@@ -202,11 +269,18 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 - **`*.output_ref`** — relative path inside the run dir. The orchestrator never inlines large content here.
 - **`phase_status`** — counts how many subagent invocations each phase has consumed. Useful for resume diagnostics and detecting runaway iteration. Not a budget — the orchestrator paces against real-time session-context signals (see SKILL.md "Pace the run against your remaining session context"), not a fixed token budget.
 - **`preferred_loader`** — set by Phase 6 (Handoff) once the orchestrator resolves which loader gets the foreground dev server. Null until Phase 6 picks. Resume reads this so the second visit to Handoff stays on the same loader. `"fabric" | "neoforge" | null`.
+- **`phase_4_build.stages`** — only present when `targets_matrix.layout == "multiloader-multi-mc"`; absent for every other layout. Records the three multi-MC build stages defined in SKILL.md Phase 4:
+  - **`stages["4a_top_common"]`** — single object. `builder_spawn_id`, `started_at`, `completed_at` (null while in flight), `skipped: true` when there were no `scope: top-common` work units. Resume reads this to decide whether to re-spawn the 4a builder.
+  - **`stages["4b_per_mc_common"]`** — array, one entry per MC line in `targets_matrix.mc_commons[]`. Each entry: `mc_version`, `builder_spawn_id`, `started_at`, `completed_at`. The array is empty if no `per-mc-common` work units exist. All entries' `started_at` should be near-identical (the orchestrator spawns the whole stage as one tool-call batch); divergent `completed_at` values are expected (builders finish at different speeds).
+  - **`stages["4c_per_mc_loader"]`** — array, one entry per `(mc_version, loader)` pair in `targets_matrix.targets[]` that has at least one matching `per-mc-fabric` / `per-mc-neoforge` work unit. Each entry: `mc_version`, `loader`, `builder_spawn_id`, `started_at`, `completed_at`. Pairs without matching work units are omitted (not present as a skipped entry).
 - **`phase_5_doctor_result`** — verbatim JSON from the last `doctor.sh --json` run, plus a `ran_at` timestamp and the `targets_json_path` Doctor was invoked against. `summary.verdict` drives the gate decision (see SKILL.md Phase 5). On `pass_with_warnings`, the orchestrator also sets `warnings_logged_at` (timestamp) — the field's presence signals the next phase that warnings were noted without blocking.
 - **`phase_6_handoff`** — written during the Handoff phase. `dev_server_started_at` / `dev_server_ended_at` are ISO-8601 timestamps. `log_watcher_report_path`, `reviewer_report_path` are relative paths to the agents' JSON reports. `gametest_results` is an array with one entry per target in `targets_matrix.targets`; each entry mirrors `targets_matrix.targets[i]` plus runtime fields (`passed`, `failed`, `status`). `scenario_results` follows the same shape but is `[]` when no scenario harness exists. `headless: true` when the skill was invoked with `--headless`; in that case `dev_server_started_at` / `dev_server_ended_at` are null. `summary_printed: true` once the orchestrator has rendered the Handoff summary for the player.
+- **`phase_6_handoff.preferred_target`** — multi-MC only (absent in single-MC mode). The full subproject string resolved during 6a (e.g. `":versions:26.1.2:neoforge"`) identifying the `(mc_version, loader)` pair that the foreground dev server attached to. Persisted so resume picks the same target and the Handoff summary's "Dev server: …" line is reproducible. Distinct from `preferred_loader_used` (which only captures the loader half — both are written so single-MC consumers that don't know about multi-MC keep working).
+- **`phase_6_handoff.per_mc_results`** — multi-MC only (absent in single-MC mode). Object keyed by `mc_version`, each value an object keyed by `loader` with the per-target test counts (`tier1_passed`, `tier1_failed`, `gametest_passed`, `gametest_failed`, `scenario_passed`, `scenario_failed`). This is the machine-readable view that the Phase 6e grouped summary is rendered from; Phase 7's aggregator also reads it to detect which targets contributed which failures. The keys mirror `targets_matrix.targets[]`; if a target's runners didn't complete, that loader's value is `null` rather than absent (so consumers can detect "ran but unknown" vs "didn't run at all").
 - **`kick_back_queue`** — array of bug reports waiting for Phase 7. Each entry: `{source: "doctor" | "reviewer" | "log-watcher" | "gametest", file?, line?, symptom, suggested_fix, severity, work_unit_key?}`. Cleared after Phase 7 consumes it; the iteration counter persists across clears.
 - **`iteration_counts.kick_back`** — counts kick-back rounds (Phase 7). Capped at 3; on cap-hit, the orchestrator surfaces the queue to the user instead of looping.
 - **`kick_back_history`** — append-only array; one entry per completed kick-back iteration in Phase 7. Each entry captures the **snapshot** of inputs and outputs for that round: `iteration` (1-indexed, mirrors `iteration_counts.kick_back` at the time the round started), `started_at` / `ended_at` (ISO-8601), `bug_report_count`, `bug_reports` (the verbatim queue handed to the builder — frozen for that iteration, not mutated by later rounds), `builder_output_path` (relative path to the builder's return summary saved under `kick-back/NN/`), `phase_6_rerun_summary` (one-line aggregate of the doctor + handoff re-run for this iteration; `"skipped — headless"` when `--headless`), and `outcome` (`"address_succeeded"` = re-run cleared the queue, `"address_partial"` = builder fixed some entries but new findings remain, `"escalated"` = iteration cap hit or builder returned `cannot_fix`). Resume reads this array to determine where to pick up: the length tells the orchestrator how many rounds have already finished; the last entry's `outcome` tells it whether to start a new round or surface the escalation.
+- **`kick_back_history[].bug_reports[].target`** — optional `{loader, mc_version}` tuple on each bug report. Only meaningful when `targets_matrix.layout == "multiloader-multi-mc"`. The de-dupe key in Phase 7b uses `target.mc_version` so two findings with the same file/line/symptom but different MC versions stay separate (the "forked-class bug in two MCs" case — see SKILL.md Phase 7b). The builder fanout in Phase 7d uses `target.mc_version` to decide whether to spawn one builder or one builder per MC. Entries with `target: null` apply to every MC line in the queue. Always omit this field in single-MC mode (i.e. when `targets_matrix.layout != "multiloader-multi-mc"`).
 - **`kick_back_escalation`** — `null` while the loop is healthy. When the orchestrator escalates (cap hit, `cannot_fix`, or reviewer `verdict == "needs_human"`), this is populated with `{escalated_at, reason, final_queue, recommendation, history_ref: "kick_back_history"}` so the human (or a future resume) has the full snapshot in one place without re-walking the history array.
 
 ## `targets_matrix` examples
@@ -224,6 +298,30 @@ A single-loader NeoForge repo emits:
   "detection_notes": []
 }
 ```
+
+A **multi-MC** overlay repo (2+ MC lines, each with its own `versions/<mc>/{common,fabric,neoforge}` tree) emits the extended schema with `multi_mc: true` and a per-MC `mc_commons[]` array:
+
+```json
+"targets_matrix": {
+  "layout": "multiloader-multi-mc",
+  "multi_mc": true,
+  "common_subproject": ":common",
+  "mc_commons": [
+    { "mc_version": "1.21.1", "subproject": ":versions:1.21.1:common", "java_toolchain": 21 },
+    { "mc_version": "26.1.2", "subproject": ":versions:26.1.2:common", "java_toolchain": 25 }
+  ],
+  "targets": [
+    { "loader": "fabric",   "mc_version": "1.21.1", "loader_version": "0.16.10",        "subproject": ":versions:1.21.1:fabric",   "java_toolchain": 21 },
+    { "loader": "neoforge", "mc_version": "1.21.1", "loader_version": "21.1.230",       "subproject": ":versions:1.21.1:neoforge", "java_toolchain": 21 },
+    { "loader": "fabric",   "mc_version": "26.1.2", "loader_version": "0.18.6",         "subproject": ":versions:26.1.2:fabric",   "java_toolchain": 25 },
+    { "loader": "neoforge", "mc_version": "26.1.2", "loader_version": "26.1.2.64-beta", "subproject": ":versions:26.1.2:neoforge", "java_toolchain": 25 }
+  ],
+  "java_toolchain": 25,
+  "detection_notes": []
+}
+```
+
+In multi-MC mode `common_subproject` always points at the top-level `:common` (pure Java only); each MC's MC-touching shared code lives in the `mc_commons[]` entries instead. The top-level `java_toolchain` reports the highest Java across all MC lines (from `java_version_shared` in `gradle.properties`); each `mc_commons[i].java_toolchain` and `targets[i].java_toolchain` is per-MC and may differ. The full layout reference is `references/multiloader-layout.md` (section "Multi-MC layout").
 
 If `detect-targets.sh` cannot find a recognized loader plugin, it exits with code 1 and `layout` is `"unknown"` (or `"monolith"` when a `minecraft_version` pin exists without a loader plugin); the orchestrator halts rather than proceeding.
 
