@@ -1016,8 +1016,8 @@ check_gradle_props_source_of_truth() {
     f=$(subproject_build_file "$subdir")
     [ -n "$f" ] && files+=("$f")
   done
-  # Include common.
-  if [ "$LAYOUT" = "multiloader" ]; then
+  # Include common (both flat multiloader and multi-MC).
+  if is_any_multiloader; then
     local cdir
     cdir=$(subproject_dir "$COMMON_SUBPROJECT")
     if [ -n "$cdir" ]; then
@@ -1025,6 +1025,19 @@ check_gradle_props_source_of_truth() {
       cf=$(subproject_build_file "$cdir")
       [ -n "$cf" ] && files+=("$cf")
     fi
+  fi
+  # Include per-MC :versions:<mc>:common build files in multi-MC mode.
+  if [ "$MULTI_MC" = "1" ]; then
+    local k=0
+    local m=${#MC_COMMON_MC[@]}
+    while [ $k -lt $m ]; do
+      local sub="${MC_COMMON_SUBPROJECT[$k]}"
+      k=$((k + 1))
+      local d; d=$(subproject_dir "$sub")
+      [ -z "$d" ] && continue
+      local bf; bf=$(subproject_build_file "$d")
+      [ -n "$bf" ] && files+=("$bf")
+    done
   fi
 
   if [ ${#files[@]} -eq 0 ]; then
@@ -1044,9 +1057,12 @@ check_gradle_props_source_of_truth() {
       if printf '%s' "$line" | grep -qE 'id[[:space:]]*[(]?[[:space:]]*[\x27"]'; then
         continue
       fi
-      # Allow lines that already reference `project.<x>_version`,
-      # `${<x>_version}`, or `version = project.foo` — those are correct.
-      if printf '%s' "$line" | grep -qE '(project\.[A-Za-z_]+_version|\$\{[A-Za-z_]+_version\}|project\(":[^"]+")\.[A-Za-z_]+_version)'; then
+      # Allow lines that already reference a project property via the
+      # MC-suffixed scheme (`project.findProperty('mc_version_1_21_1')`),
+      # the shorthand `project.<x>_version`, or string interpolation
+      # `${<x>_version}` — these are correct, source-of-truth via
+      # gradle.properties.
+      if printf '%s' "$line" | grep -qE '(project\.findProperty|project\.[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})'; then
         continue
       fi
       local raw="$line"
@@ -1200,7 +1216,7 @@ check_java_toolchain() {
 # ----------------------------------------------------------------------------
 
 check_refmap_config() {
-  if [ "$LAYOUT" != "multiloader" ]; then
+  if ! is_any_multiloader; then
     add_finding "fabric-refmap-enabled-neoforge-disabled" "hard_fail" "skip" "" "" \
       "skipped: layout=$LAYOUT (multiloader-only check)" ""
     return 0
@@ -1208,56 +1224,53 @@ check_refmap_config() {
   local any=0
   local checked=0
 
-  # Fabric side: confirm Loom default refmap behavior is not disabled.
-  local fdir
-  fdir=$(loader_dir "fabric")
-  if [ -n "$fdir" ]; then
-    local fb
-    fb=$(subproject_build_file "$fdir")
-    if [ -n "$fb" ]; then
+  # Walk every fabric/neoforge target.
+  local i=0
+  local n=${#T_LOADER[@]}
+  while [ $i -lt $n ]; do
+    local loader="${T_LOADER[$i]}"
+    local subdir
+    subdir=$(subproject_dir "${T_SUBPROJECT[$i]}")
+    i=$((i + 1))
+    [ -z "$subdir" ] && continue
+    local bf
+    bf=$(subproject_build_file "$subdir")
+    [ -z "$bf" ] && continue
+
+    if [ "$loader" = "fabric" ]; then
       checked=1
-      # Look for explicit refmap disablement.
       while IFS=: read -r lineno line; do
         [ -z "$lineno" ] && continue
         local msg
         msg=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         add_finding "fabric-refmap-enabled-neoforge-disabled" "hard_fail" "fail" \
-          "$fb" "$lineno" \
-          "Fabric build disables Loom's default mixin refmap behavior: $msg" \
+          "$bf" "$lineno" \
+          "Fabric build ($subdir) disables Loom's default mixin refmap behavior: $msg" \
           "Remove this line; Fabric requires the refmap to apply mixins in dev + prod"
         any=1
-      done < <(strip_gradle_comments "$fb" | \
+      done < <(strip_gradle_comments "$bf" | \
         grep -nE '(useLegacyMixinAp[[:space:]]*=[[:space:]]*false|refmap[[:space:]]*=[[:space:]]*false|noRefmap[[:space:]]*[=(])' \
         2>/dev/null || true)
-    fi
-  fi
-
-  # NeoForge side: confirm Loom plugin is NOT present in :neoforge build.
-  local ndir
-  ndir=$(loader_dir "neoforge")
-  if [ -n "$ndir" ]; then
-    local nb
-    nb=$(subproject_build_file "$ndir")
-    if [ -n "$nb" ]; then
+    elif [ "$loader" = "neoforge" ]; then
       checked=1
       while IFS=: read -r lineno line; do
         [ -z "$lineno" ] && continue
         local msg
         msg=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
         add_finding "fabric-refmap-enabled-neoforge-disabled" "hard_fail" "fail" \
-          "$nb" "$lineno" \
-          ":neoforge subproject applies a Loom plugin, which would emit refmap mappings that NeoForge cannot consume: $msg" \
-          "Remove the fabric-loom plugin from neoforge/build.gradle — only ModDevGradle (net.neoforged.moddev) belongs here"
+          "$bf" "$lineno" \
+          ":neoforge subproject ($subdir) applies a Loom plugin, which would emit refmap mappings that NeoForge cannot consume: $msg" \
+          "Remove the fabric-loom plugin from $subdir/build.gradle — only ModDevGradle (net.neoforged.moddev) belongs here"
         any=1
-      done < <(strip_gradle_comments "$nb" | \
+      done < <(strip_gradle_comments "$bf" | \
         grep -nE "(net\.fabricmc\.fabric-loom|['\"]fabric-loom['\"]|dev\.architectury\.loom)" \
         2>/dev/null || true)
     fi
-  fi
+  done
 
   if [ $checked -eq 1 ] && [ $any -eq 0 ]; then
     add_finding "fabric-refmap-enabled-neoforge-disabled" "hard_fail" "pass" "" "" \
-      "Loom refmap behavior is preserved on Fabric; no Loom plugin on NeoForge" ""
+      "Loom refmap behavior is preserved on every Fabric subproject; no Loom plugin on any NeoForge subproject" ""
   elif [ $checked -eq 0 ]; then
     add_finding "fabric-refmap-enabled-neoforge-disabled" "hard_fail" "skip" "" "" \
       "skipped: no fabric or neoforge build files found" ""
@@ -1270,6 +1283,9 @@ check_refmap_config() {
 
 check_mixin_config_references() {
   # Find every *.mixins.json. For each, see if it's listed in a loader manifest.
+  # Multi-MC: a mixins.json under versions/<mc>/ must be referenced from a
+  # manifest under the SAME versions/<mc>/ subtree (or from a top-level common
+  # manifest, which doesn't actually exist in our scaffolds, but be lenient).
   local any=0
   local checked=0
 
@@ -1277,15 +1293,30 @@ check_mixin_config_references() {
     checked=1
     local base
     base=$(basename "$mixin")
-    # Search Fabric manifests and NeoForge manifests for this filename.
+    # Determine the per-MC scope, if any. If the mixin path matches
+    # ./versions/<mc>/..., we'll constrain manifest search to that subtree.
+    local mc_scope=""
+    case "$mixin" in
+      ./versions/*/*|versions/*/*)
+        # Strip leading "./", then take "versions/<mc>/".
+        local p="${mixin#./}"
+        mc_scope="${p#versions/}"
+        mc_scope="${mc_scope%%/*}"
+        ;;
+    esac
+
     local referenced=0
+    local fm_root="."
+    if [ -n "$mc_scope" ] && [ "$MULTI_MC" = "1" ]; then
+      fm_root="./versions/$mc_scope"
+    fi
 
     while IFS= read -r -d '' fm; do
       if grep -qF "\"$base\"" "$fm" 2>/dev/null; then
         referenced=1
         break
       fi
-    done < <(find . \( -path '*/build/*' -o -path '*/.gradle/*' -o -path '*/.git/*' -o -path '*/node_modules/*' \) -prune \
+    done < <(find "$fm_root" \( -path '*/build/*' -o -path '*/.gradle/*' -o -path '*/.git/*' -o -path '*/node_modules/*' \) -prune \
               -o -type f -name 'fabric.mod.json' -print0 \
               2>/dev/null)
 
@@ -1296,16 +1327,18 @@ check_mixin_config_references() {
           referenced=1
           break
         fi
-      done < <(find . \( -path '*/build/*' -o -path '*/.gradle/*' -o -path '*/.git/*' -o -path '*/node_modules/*' \) -prune \
+      done < <(find "$fm_root" \( -path '*/build/*' -o -path '*/.gradle/*' -o -path '*/.git/*' -o -path '*/node_modules/*' \) -prune \
                 -o -type f \( -name 'neoforge.mods.toml' -o -name 'mods.toml' \) -print0 \
                 2>/dev/null)
     fi
 
     if [ $referenced -eq 0 ]; then
+      local where="any loader manifest"
+      [ -n "$mc_scope" ] && [ "$MULTI_MC" = "1" ] && where="any loader manifest under versions/$mc_scope/"
       add_finding "mixin-config-references" "hard_fail" "fail" \
         "$mixin" "" \
-        "$base is not referenced from any loader manifest (fabric.mod.json or neoforge.mods.toml)" \
-        "Add \"$base\" to the fabric.mod.json mixins array, or a [[mixins]] config=\"$base\" entry in neoforge.mods.toml"
+        "$base is not referenced from $where" \
+        "Add \"$base\" to the fabric.mod.json mixins array, or a [[mixins]] config=\"$base\" entry in neoforge.mods.toml (per-MC manifests for multi-MC)"
       any=1
     fi
   done < <(find . \( -path '*/build/*' -o -path '*/.gradle/*' -o -path '*/.git/*' -o -path '*/node_modules/*' \) -prune \
@@ -1326,6 +1359,75 @@ check_mixin_config_references() {
 # ----------------------------------------------------------------------------
 
 check_modid_consistent() {
+  # Multi-MC: walk every (mc, loader) manifest, verify they all share one modid.
+  if [ "$MULTI_MC" = "1" ]; then
+    local rootid; rootid=$(detect_root_modid)
+    local first_id=""
+    local first_src=""
+    local any_fail=0
+    local checked=0
+    local i=0
+    local n=${#T_LOADER[@]}
+    while [ $i -lt $n ]; do
+      local loader="${T_LOADER[$i]}"
+      local subdir
+      subdir=$(subproject_dir "${T_SUBPROJECT[$i]}")
+      local mc="${T_MC[$i]}"
+      i=$((i + 1))
+      [ -z "$subdir" ] && continue
+      local manifest=""
+      local mid=""
+      if [ "$loader" = "fabric" ] && [ -f "$subdir/src/main/resources/fabric.mod.json" ]; then
+        manifest="$subdir/src/main/resources/fabric.mod.json"
+        mid=$(read_json_string_field "$manifest" "id")
+      elif [ "$loader" = "neoforge" ] || [ "$loader" = "forge" ]; then
+        if [ -f "$subdir/src/main/resources/META-INF/neoforge.mods.toml" ]; then
+          manifest="$subdir/src/main/resources/META-INF/neoforge.mods.toml"
+        elif [ -f "$subdir/src/main/resources/META-INF/mods.toml" ]; then
+          manifest="$subdir/src/main/resources/META-INF/mods.toml"
+        fi
+        if [ -n "$manifest" ]; then
+          mid=$(read_toml_modid "$manifest")
+        fi
+      fi
+      [ -z "$manifest" ] && continue
+      # NeoForge mods.toml may use ${mod_id} — treat that as "matches".
+      if printf '%s' "$mid" | grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}'; then
+        continue
+      fi
+      [ -z "$mid" ] && continue
+      checked=1
+      if [ -z "$first_id" ]; then
+        first_id="$mid"
+        first_src="$manifest"
+      elif [ "$first_id" != "$mid" ]; then
+        add_finding "modid-consistent-across-loaders" "hard_fail" "fail" \
+          "$manifest" "" \
+          "modid mismatch: $manifest modId=$mid but $first_src had $first_id (multi-MC: all manifests across MC × loader pairs must agree)" \
+          "Pick a single modid and update every per-MC, per-loader manifest"
+        any_fail=1
+      fi
+    done
+    # Optional: gradle.properties modid match.
+    if [ -n "$rootid" ] && [ -n "$first_id" ] && [ "$rootid" != "$first_id" ]; then
+      add_finding "modid-consistent-across-loaders" "hard_fail" "fail" \
+        "gradle.properties" "" \
+        "gradle.properties modid=$rootid does not match manifest modid=$first_id" \
+        "Reconcile gradle.properties' modid with the manifests"
+      any_fail=1
+    fi
+    if [ $checked -eq 0 ]; then
+      add_finding "modid-consistent-across-loaders" "hard_fail" "skip" "" "" \
+        "skipped: no per-MC manifests found (or all use \${mod_id} placeholder)" ""
+      return 0
+    fi
+    if [ $any_fail -eq 0 ]; then
+      add_finding "modid-consistent-across-loaders" "hard_fail" "pass" "" "" \
+        "modid consistent across every (MC, loader) pair ($first_id)" ""
+    fi
+    return 0
+  fi
+
   # Find each loader's manifest, extract its modid, compare.
   local fdir ndir
   fdir=$(loader_dir "fabric")
@@ -1465,10 +1567,20 @@ check_pack_mcmeta_present() {
     [ -n "$d" ] && dirs+=("$d")
     i=$((i + 1))
   done
-  if [ "$LAYOUT" = "multiloader" ]; then
+  if is_any_multiloader; then
     local cdir
     cdir=$(subproject_dir "$COMMON_SUBPROJECT")
     [ -n "$cdir" ] && dirs+=("$cdir")
+  fi
+  if [ "$MULTI_MC" = "1" ]; then
+    local k=0
+    local m=${#MC_COMMON_MC[@]}
+    while [ $k -lt $m ]; do
+      local sub="${MC_COMMON_SUBPROJECT[$k]}"
+      k=$((k + 1))
+      local d; d=$(subproject_dir "$sub")
+      [ -n "$d" ] && dirs+=("$d")
+    done
   fi
   if [ ${#dirs[@]} -eq 0 ]; then
     add_finding "pack-mcmeta-present-if-assets-or-data" "warn" "skip" "" "" \
@@ -1545,6 +1657,14 @@ check_pinned_versions_fresh() {
     local lver="${T_LVER[$i]}"
     i=$((i + 1))
     [ -z "$loader" ] && continue
+    # In multi-MC, surface the MC line in the message and reference the
+    # suffixed gradle.properties key in the hint.
+    local mc_label=""
+    local suffix=""
+    if [ "$MULTI_MC" = "1" ] && [ -n "$mc" ]; then
+      mc_label=" (MC $mc)"
+      suffix="_$(mc_suffix "$mc")"
+    fi
     case "$loader" in
       fabric)
         # Fetch the loader stable list. Match the first "version":"X.Y.Z" out of the JSON.
@@ -1563,8 +1683,8 @@ check_pinned_versions_fresh() {
         if [ -n "$latest" ] && [ -n "$lver" ] && [ "$latest" != "$lver" ]; then
           add_finding "pinned-versions-fresh" "warn" "fail" \
             "gradle.properties" "" \
-            "Fabric loader pinned at $lver; latest is $latest" \
-            "Bump fabric_loader_version to $latest (or recent enough)"
+            "Fabric loader pinned at $lver${mc_label}; latest is $latest" \
+            "Bump fabric_loader_version${suffix} to $latest (or recent enough)"
           any=1
         fi
         ;;
@@ -1586,8 +1706,8 @@ check_pinned_versions_fresh() {
           # 26.1.x), that's a regular bump suggestion.
           add_finding "pinned-versions-fresh" "warn" "fail" \
             "gradle.properties" "" \
-            "NeoForge pinned at $lver; latest is $latest" \
-            "Bump neoforge_version to $latest (or recent enough; check release notes for breaking changes)"
+            "NeoForge pinned at $lver${mc_label}; latest is $latest" \
+            "Bump neoforge_version${suffix} to $latest (or recent enough; check release notes for breaking changes)"
           any=1
         fi
         ;;
