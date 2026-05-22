@@ -167,7 +167,27 @@ Every phase boundary, before advancing to the next phase, the orchestrator MUST:
 
 If you (the orchestrator) catch yourself skipping a phase boundary write because "it was a quick step" or "I'll do it after the next phase" — stop and write it now. That heuristic is the failure mode this rule prevents.
 
-### 0. Architect (decomposition)
+### Phase numbering at a glance
+
+```
+0. Bootstrap   — detect host project, emit targets matrix, set up run dir
+1. Architect   — decompose task; also emit play-expectations.json for the watcher
+2. Research    — optional, only if novel APIs / blockers
+3. Plan        — optional, only if architecture isn't obvious
+4. Build       — common first, then per-loader builders (in worktrees)
+5. Doctor gate — block on hard_fail; route failures as kick-back
+6. Handoff     — foreground dev server + background log-watcher / gametest / reviewer
+7. Kick-back   — reviewer/log-watcher findings routed back into Build (cap = 3)
+8. PR          — orchestrator-owned; opens or refreshes existing PR
+```
+
+Phases 5 and 6 collectively replace the previous serial `GameTest → Scenario → Review` triptych: doctor is now a hard gate, and the dev-server handoff in Phase 6 runs gametest, scenario, log-watcher, and reviewer concurrently behind a foreground play-test session. See the per-phase sections below for full mechanics.
+
+### 0. Bootstrap
+
+Already documented in the **Bootstrap (always run first, in order)** section above. The phase number here exists so resume / state-machine logic can refer to "Phase 0" uniformly. Bootstrap covers: target-matrix detection (`scripts/detect-targets.sh`), run-dir creation or resume, preflight checks, pacing setup. State writes for Bootstrap happen at the boundary into Phase 1.
+
+### 1. Architect (decomposition)
 
 **Skip** when the task is obviously single-subtask (one bug fix, a small feature in one subsystem) or the user explicitly says "no decomposition". Otherwise default to running it.
 
@@ -175,10 +195,12 @@ Spawn `mc-mod-architect` with:
 - The user's task verbatim.
 - The path to the run dir.
 - An instruction to write its decomposition to `{RUN_DIR}/architect.json` per the architect's documented schema.
-- **Output discipline reminder:** "Write the JSON to the file using the Write tool. Do NOT echo it in your message body — the orchestrator reads it from disk. Returning JSON in chat costs tokens twice (your output + my read of your reply) for content I'll only re-read from the file."
+- An instruction to **also emit `{RUN_DIR}/play-expectations.json`** — the per-feature spec the log-watcher consumes in Phase 6 (see `references/log-watcher-rules.md` and `agents/log-watcher.md` for the schema). The architect derives `should_see` / `should_not_see` patterns from the feature work units; when a `should_see` pattern presupposes a log line the builder needs to add, the architect must call that out in the corresponding subtask's `acceptance_criteria` so the builder includes the `LOGGER.info(...)` call.
+- **Output discipline reminder:** "Write the JSON files to disk using the Write tool. Do NOT echo them in your message body — the orchestrator reads them from disk. Returning JSON in chat costs tokens twice (your output + my read of your reply) for content I'll only re-read from the file."
 
 After it returns:
 - Read `{RUN_DIR}/architect.json`.
+- Read `{RUN_DIR}/play-expectations.json` (if absent: warn but continue — the watcher will fall back to universal baselines only).
 - If `subtasks: []` and `open_questions` is non-empty, surface those questions to the user and pause. Don't auto-resolve.
 - If decomposition is sane (≥1 subtask, parallel groups are valid), advance to research.
 
@@ -187,20 +209,21 @@ Update `state.json`:
 "architect": {
   "status": "complete",
   "output_ref": "architect.json",
+  "play_expectations_ref": "play-expectations.json",
   "subtask_count": <N>,
   "parallel_group_count": <M>
 },
-"completed_phases": ["architect"],
+"completed_phases": ["bootstrap", "architect"],
 "current_phase": "research"
 ```
 
-### 1. Research (optional)
+### 2. Research (optional)
 
 Skip if the task is well-scoped or `architect.json` already cites the relevant prior art. Otherwise spawn `researcher` with the user's task, the run dir, and any cited prior `docs/workflow-runs/NNN/*.md`. Output: `{RUN_DIR}/research.md`.
 
 Update state to mark research complete + approved.
 
-### 2. Plan (optional)
+### 3. Plan (optional)
 
 Skip if architecture is obvious from `architect.json`. Otherwise spawn `planner` with:
 - The user's task.
@@ -214,7 +237,7 @@ Skip if architecture is obvious from `architect.json`. Otherwise spawn `planner`
 
 Output: `{RUN_DIR}/plan.md`. Review yourself; if it presents options, choose the simpler one and document the choice in `state.json` or `plan.md`. If it has gaps, send it back with feedback (count toward iteration budget).
 
-### 3. Build
+### 4. Build
 
 This is where parallelism happens. For each `parallel_group` in `architect.json`, in order:
 
@@ -264,40 +287,401 @@ If the blocker can't be resolved (researcher returns "this requires a deeper arc
 - accepts a documented scope reduction (the builder ships what's possible, blocker is a follow-up)
 - escalates to the user with the blocker on the table
 
-### 4. GameTest expansion (optional)
+### 5. Doctor gate
 
-If the feature touches a surface that's not yet covered by GameTest, spawn `mc-gametest-author` with the run dir + the merged feature branch. They run `./gradlew runGameTestServer` themselves until green.
+After Build (and after every kick-back iteration), the orchestrator runs `/modsmith:doctor` non-interactively as a hard gate. Doctor's output is consumed as structured JSON — never paraphrase its findings into prose for the gate decision.
 
-**Pre-clean the GameTest universe before every run.** Use `scripts/run-gametest.sh` — it cleans `run/gametestserver/` first, tees output to a known log path, and returns structured `{status, gradle_exit, passed, failed, log}`. The PreToolUse hook also purges the directory automatically before any `runGameTestServer` Bash call as a belt-and-braces safety net.
+**Invocation:**
 
-**Spec-first oversight.** This is the single most common failure mode: tests that pin current behavior instead of asserting intended behavior. Before accepting `mc-gametest-author`'s output, review with this lens:
+```bash
+# Prefer the cached targets matrix from state.json. If state is stale
+# (e.g. files moved during the Build phase), recompute first.
+TARGETS_JSON="$RUN_DIR/targets-matrix.json"  # written during Bootstrap
+if [ ! -f "$TARGETS_JSON" ] || [ "$RECOMPUTE_TARGETS" = "1" ]; then
+  bash "$MODSMITH_DIR/scripts/detect-targets.sh" > "$TARGETS_JSON"
+fi
+bash "$MODSMITH_DIR/scripts/doctor.sh" --json --targets "$TARGETS_JSON" > "$RUN_DIR/doctor-result.json"
+DOCTOR_EXIT=$?
+```
 
-- For each new test, can you point at the design source (CLAUDE.md, javadoc, proposal doc) it's asserting against? If the test is just "this is what the code does," push back.
-- Look for class-hierarchy checks, subtype dispatch chains, and recently-added entities that pre-existing code might not know about. These are the recurring bug patterns. If the test doesn't cover them, ask the agent to extend.
-- If `mc-gametest-author` reports a test that's failing because production is buggy (not because the test is wrong), spawn `mc-mod-builder` to fix the production code first, then re-run the failing test against the corrected behavior. **Do NOT let the agent weaken the test to pass.**
+(`MODSMITH_DIR` is resolved the same way Bootstrap resolves it — `${CLAUDE_PLUGIN_ROOT}` first, then a walk-up fallback.)
 
-**Concrete past examples in this codebase** (cautionary tales):
+**Parse the JSON output** (shape documented in `scripts/doctor.sh`):
 
-- `GuardTickHandler.onEntityKilledByGuard` had Soldier+Archer branches but no Captain branch. A code-first test using only a Soldier killer would have passed and missed the bug.
-- `xpForVictim` used `instanceof Monster`. Spec says "hostile mob"; the right check is `instanceof Enemy`. A test using Zombie passes; Phantom/Slime/Hoglin would fail.
+```jsonc
+{
+  "summary": {
+    "hard_fail_count": 0,
+    "warn_count": 2,
+    "passed_count": 14,
+    "verdict": "fail" | "pass" | "pass_with_warnings"
+  },
+  "findings": [
+    { "check": "...", "severity": "hard_fail | warn | info",
+      "status": "fail | pass | skip", "file": "...", "line": N,
+      "message": "...", "fix_hint": "..." }
+  ]
+}
+```
 
-### 5. Scenario authoring (optional, if Tier-3 supported)
+**Verdict handling:**
 
-Skip if no scenario harness. Otherwise: if the feature is multi-actor / cross-feature / multi-day, spawn `mc-scenario-author`.
+- **`verdict == "pass"`** — write `state.json.phase_5_doctor_result` with the full JSON, mark phase complete, advance to Phase 6 (Handoff).
+- **`verdict == "pass_with_warnings"`** — log the warnings into `state.json.phase_5_doctor_result.warnings_logged_at` (timestamp). Do NOT block. Advance to Phase 6. The reviewer in Phase 6 will see the warnings via the same JSON file.
+- **`verdict == "fail"`** — **do not advance to Handoff.** Convert each `severity == "hard_fail" && status == "fail"` finding into a structured bug report:
 
-### 6. Scenario validation loop (if Tier-3 supported)
+  ```jsonc
+  {
+    "source": "doctor",
+    "check": "<check id>",
+    "file": "<finding.file>",
+    "line": <finding.line>,
+    "symptom": "<finding.message>",
+    "suggested_fix": "<finding.fix_hint>",
+    "severity": "hard_fail"
+  }
+  ```
 
-Spawn `mc-scenario-runner` with the list of scenario ids. For each FAIL:
+  Append the array of bug reports to `state.json.kick_back_queue` and transition `current_phase = "kick_back"`. Phase 7 (below) routes them back into Phase 4 (Build).
 
-- Spawn `mc-scenario-analyzer` with the runner's output.
-- Take the analyzer's bug report; spawn `mc-mod-builder` again with "fix bug as described in <report>".
-- Re-spawn `mc-scenario-runner` for the affected scenario(s).
+Always write `phase_5_doctor_result` (full JSON) into `state.json` before transitioning — even on fail, the next iteration may need to diff against the prior result to detect regressions vs. fresh failures.
 
-Loop until all scenarios PASS or `iteration_counts.scenario_loop` hits **5**. If the analyzer keeps producing similar diagnoses across iterations, the bug is in the scenario or the harness — escalate.
+### 6. Handoff (dev server + concurrent agents)
 
-### 7. Final review (optional)
+**This phase replaces the previous serial GameTest / Scenario / Review phases.** Foreground = a live dev-server play-test by the human player. Background = log-watcher, gametest-author, gametest-runner (per target), scenario-runner (per target), and reviewer all running concurrently. The full protocol is documented in `references/dev-server-playbook.md` — this section is the orchestrator-side wiring.
 
-Spawn `reviewer` for non-trivial changes. Output: `{RUN_DIR}/review.md`.
+If the skill was invoked with `--headless` (or `gradle.properties` has `modsmith.headless=true`), **skip the dev-server start entirely**. The headless path runs gametest-runner → scenario-runner → reviewer sequentially in the foreground and falls through to the Handoff summary. See "Headless mode" at the end of this section.
+
+#### 6a. Pick the preferred loader
+
+```
+prefer ← state.json.preferred_loader  (if already set this run)
+      ← --prefer <loader> CLI flag    (explicit wins)
+      ← architect.json.prefer         (feature spec hint, optional)
+      ← gradle.properties: modsmith.prefer_loader
+      ← "neoforge" if present in targets_matrix.targets[].loader
+      ← targets_matrix.targets[0].loader   (last resort)
+```
+
+Persist the resolved choice into `state.json.preferred_loader` so resume picks the same loader.
+
+#### 6b. Start the dev server (foreground)
+
+```bash
+bash "$MODSMITH_DIR/scripts/start-dev-server.sh" "$PREFERRED_LOADER"
+```
+
+That script (see `scripts/start-dev-server.sh`):
+
+- Creates `runs/<loader>/` if missing.
+- Invokes `./gradlew :<loader>:runClient` with stdout/stderr tee'd to `runs/<loader>/play-session.log`. The player still sees a live console — `tee` preserves real-time output.
+- Writes `runs/<loader>/server.pid` containing the gradle process PID. (The same script removes the PID file on exit.)
+- Writes `runs/<loader>/play-session.meta.json` with start time + loader. The orchestrator records `phase_6_handoff.dev_server_started_at` at this point.
+- Blocks until the gradle process exits (player closes the MC window, ^C, `:q`, or crash).
+- On exit, writes `runs/<loader>/.session-ended` (the sentinel the `log-watcher` agent watches for) and `runs/<loader>/play-session.exit.json` (`{exit_code, duration_s, wall_clock_end, crash_signal}`).
+
+The orchestrator does NOT need to write `.session-ended` itself; `start-dev-server.sh` owns that. (The convention is documented at the top of the script.)
+
+#### 6c. Print the testing plan
+
+Before invoking `start-dev-server.sh`, render and print the testing plan to the player's terminal. Source the plan from one of:
+
+1. `architect.json.testing_plan` — preferred. The architect's feature spec emits a structured plan: an array of player-action steps tied to work-unit acceptance criteria. Format as a numbered list of 5–10 steps.
+2. If absent, **build the plan from work-unit acceptance criteria** by joining each subtask's `acceptance_criteria` bullets into a single numbered list (cap at 10).
+
+Append the "Running concurrently" block listing background agents (log-watcher, gametest, scenario, reviewer) so the player knows what's happening off-screen. The exact format is shown in `references/dev-server-playbook.md` (search for "The printed testing plan").
+
+#### 6d. Spawn background agents
+
+The orchestrator launches four background agent groups concurrent with the foreground dev server. Spawn them in a **single tool-call batch** so they overlap.
+
+The Claude Code primitive used to spawn background agents varies by host version:
+
+- **Preferred (Claude Code ≥ 2.1.110):** use the `Task` tool with `subagent_type` set to the agent's slug (`log-watcher`, `gametest-author`, `gametest-runner`, `reviewer`). The orchestrator gets back per-agent handles it can later harvest. This is the canonical primitive — Task spawns are non-blocking from the orchestrator's perspective when issued together in one tool-call batch (the harness joins them on the orchestrator's next turn).
+- **Fallback (older / general-purpose registry):** use `Agent(subagent_type: "general-purpose", ...)` and inline the relevant agent file's body as the role instructions (same pattern as the "Custom subagent fallback" section at the end of this skill). When using this path, treat each Agent call as effectively concurrent if and only if all are issued in the same tool-call batch — the harness still parallelizes them.
+
+The orchestrator should try `Task` first and fall back to `Agent` on registry errors. Either way, the four logical agents are:
+
+| Agent | Cardinality (v1) | Inputs | Output file |
+| --- | --- | --- | --- |
+| `log-watcher` | 1 (for the foreground loader) | `LOG_PATH`, `EXPECTATIONS_PATH`, `RULES_PATH`, `STATE_PATH`, `REPORT_PATH`, `SESSION_SENTINEL`, `LOADER` (see `agents/log-watcher.md`) | `runs/<loader>/watcher-report.json` |
+| `gametest-author` | 1 (writes tests for all loaders — common code lives in `common/`) | run dir, architect.json, targets matrix | new Java files under `<loader>/src/main/java/.../gametest/` |
+| `gametest-runner` | 1 per target in the matrix | target tuple, run dir | `runs/<loader>/gametest-results.json` |
+| `reviewer` | 1 (runs once gametest results are in) | run dir, all background artifacts, doctor JSON | `runs/review.json` |
+
+v1 spawns one `log-watcher` for the foreground loader only; background loaders' play-session logs don't exist (no second MC client). `gametest-author` writes tests once for the whole repo. `gametest-runner` fans out to one per target. `reviewer` waits for gametest-runners to finish (the orchestrator gates the reviewer spawn on the runner harvest, or instructs the reviewer to consume runner artifacts that appear during its loop).
+
+Each agent receives an absolute run-dir path and the targets matrix verbatim in its prompt (same contract as Bootstrap step 1b).
+
+#### 6e. Detect player exit, finalize, summarize
+
+The orchestrator detects exit via either:
+
+- **PID-file polling** — `runs/<loader>/server.pid` no longer corresponds to a live PID (preferred; cheap and reliable).
+- **Sentinel-file** — `runs/<loader>/.session-ended` exists (written by `start-dev-server.sh` on its own exit).
+
+Either signal is sufficient. The sentinel is what the `log-watcher` agent listens for to trigger its finalize pass — see `agents/log-watcher.md`.
+
+After exit:
+
+1. Record `state.json.phase_6_handoff.dev_server_ended_at` (ISO-8601).
+2. Wait for background agents to complete. Collect:
+   - `runs/<loader>/watcher-report.json` (log-watcher report) → `phase_6_handoff.log_watcher_report_path`
+   - `runs/<loader>/gametest-results.json` per target → `phase_6_handoff.gametest_results` (array)
+   - `runs/<loader>/scenario-results.json` per target (if applicable) → `phase_6_handoff.scenario_results` (array)
+   - `runs/review.json` → `phase_6_handoff.reviewer_report_path`
+3. **Compose the Handoff summary** (the structured aggregate of all findings) and print it. Format documented in `references/dev-server-playbook.md` (search for "The Handoff summary"). Record `state.json.phase_6_handoff.summary_printed = true` after printing.
+4. Decide next phase:
+   - If reviewer verdict is `approved` AND no `hard_fail` log-watcher findings AND all gametests pass: advance to Phase 8 (PR).
+   - Otherwise: build a kick-back queue (reviewer's bug reports + log-watcher `hard_fail` findings + failing gametest details) and transition to Phase 7.
+
+#### 6f. Headless mode (`--headless`)
+
+When `--headless` is set:
+
+- Skip 6b (no dev-server start), 6c (no testing plan), and 6e exit-detection.
+- Run gametest-runner per target and reviewer **sequentially in the foreground** (the orchestrator awaits each Agent/Task call instead of batching). gametest-author still runs first if tests are missing.
+- log-watcher runs against the gametest-runner's log output only; `should_see` patterns that require player action are auto-marked "skipped — headless" in the report.
+- Compose and print the Handoff summary as usual.
+
+CI is the canonical headless caller; any non-interactive parent agent should also pass `--headless` so the orchestrator doesn't try to attach a TTY.
+
+### 7. Kick-back loop
+
+Phase 7 closes the feedback loop between the player-test surface (Phase 6) and the builder (Phase 4). Phase 6 hands off **four input streams** — gametest results, scenario results, log-watcher findings, reviewer verdict — and Phase 7's job is to aggregate them into a single bug-report queue, then decide whether to (a) approve and advance to PR, (b) kick back to the builder for another iteration, or (c) escalate to the human.
+
+The cap is **3 iterations**. The orchestrator owns the loop end-to-end; the reviewer's `verdict` is a strong input but not the sole authority — the orchestrator has the matrix view across all four streams.
+
+#### 7a. Input streams and where they live
+
+```
+       ┌───────────────────────────────────────────────────────────────┐
+       │                  state.json.phase_6_handoff                   │
+       │                                                               │
+       │  gametest_results[]    scenario_results[]                     │
+       │       │                       │                               │
+       │       ▼                       ▼                               │
+       │   (per-target           (per-target                           │
+       │    pass/fail)            scenario verdicts —                  │
+       │                          may already include                  │
+       │                          scenario-analyzer bug reports)       │
+       │                                                               │
+       │  log_watcher_report_path  →  runs/<loader>/watcher-report.json│
+       │       │                                                       │
+       │       ▼                                                       │
+       │   findings[] with severity hard_fail | warn | warn_if_missing │
+       │                            | warn_if_exceeded                 │
+       │                                                               │
+       │  reviewer_report_path  →  runs/review.json                    │
+       │       │                                                       │
+       │       ▼                                                       │
+       │   { verdict, bug_reports[], coverage_gaps[], praise[] }       │
+       └───────────────────────────────────────────────────────────────┘
+                                     │
+                                     ▼
+                          ┌────────────────────┐
+                          │   AGGREGATOR (7b)  │
+                          │                    │
+                          │  build queue,      │
+                          │  de-dupe overlaps  │
+                          └─────────┬──────────┘
+                                    │
+                                    ▼
+                          ┌────────────────────┐
+                          │   DECISION (7c)    │
+                          │                    │
+                          │  empty?           ─┼─→ APPROVE  → Phase 8 (PR)
+                          │  warn-only +      ─┼─→ APPROVE  → Phase 8 (PR)
+                          │   reviewer=approve │   (with warnings logged)
+                          │                    │
+                          │  hard_fail,       ─┼─→ KICK BACK → 7d builder
+                          │   iter < 3         │
+                          │                    │
+                          │  hard_fail,       ─┼─→ ESCALATE → 7e human
+                          │   iter >= 3        │
+                          │                    │
+                          │  reviewer=        ─┼─→ ESCALATE → 7e human
+                          │   needs_human      │
+                          └────────────────────┘
+                                                  ┌─────────────────────┐
+                          KICK BACK (7d) ─────→   │  spawn builder      │
+                                                  │  with bug reports   │
+                                                  │  re-run Phase 5     │
+                                                  │  re-run Phase 6     │
+                                                  │  return to Phase 7  │
+                                                  └─────────────────────┘
+```
+
+#### 7b. Aggregation step
+
+Read all four reports from disk (paths in `state.json.phase_6_handoff`). Build a unified bug-report queue with each entry shaped:
+
+```jsonc
+{
+  "source": "reviewer" | "log-watcher" | "gametest" | "scenario" | "doctor",
+  "file": "<path or null>",
+  "line": <int or null>,
+  "loader": "common" | "fabric" | "neoforge" | null,
+  "symptom": "<one sentence>",
+  "suggested_fix": "<concrete change>",
+  "severity": "hard_fail" | "warn",
+  "work_unit_key": "<idempotency token for the affected work unit, when derivable>"
+}
+```
+
+Promotion rules per source:
+
+| Source | What to promote | Resulting severity |
+| --- | --- | --- |
+| `reviewer.bug_reports[]` | Every entry — verbatim — with `source: "reviewer"` | Keep reviewer's `severity` (`hard_fail` or `warn`) |
+| `log-watcher.findings[]` with `severity == "hard_fail"` | Auto-promote with `source: "log-watcher"` for tracing. Map `pattern` + `context_lines[0]` → `symptom`; the log line's file/line if derivable (e.g. from a stack trace in `context_lines`) → `file`/`line`; otherwise null | `hard_fail` |
+| `log-watcher.findings[]` with `severity == "warn"`, `warn_if_missing`, or `warn_if_exceeded` | Promote only if the reviewer didn't already flag the same finding (the reviewer cross-references these per its prompt). When promoted, `source: "log-watcher"` | `warn` |
+| `gametest_results[].failed > 0` (any target) | One bug-report per failing test: `loader: <target.loader>`, `source: "gametest"`, `symptom` = the test name + failure message from the runner's JSON, `suggested_fix` = empty string (the builder reads the test source itself) | `hard_fail` |
+| `scenario_results[].failed > 0` (any target) | Similar to gametest. If the runner's output already includes scenario-analyzer-style bug reports (e.g. it embedded `{file, line, symptom, suggested_fix}` blobs), pass those through with `source: "scenario"` and `loader: <target.loader>`; otherwise emit a generic entry with just the scenario id + verdict | `hard_fail` |
+| `phase_5_doctor_result.findings[]` with `severity == "hard_fail"` | (Carried over from Phase 5's own queueing — already in `state.json.kick_back_queue` if doctor failed before reaching Phase 6) | `hard_fail` |
+
+The aggregator **always rebuilds the queue from scratch** at the start of Phase 7 — it does not accumulate stale entries from a prior iteration. Any entries left over from Phase 5's pre-Handoff doctor failure (i.e. doctor failed before Phase 6 ran) stay in `kick_back_queue` and are re-aggregated here alongside the Handoff streams.
+
+**De-dupe rule** — same bug surfaced by multiple sources is one entry. Build a dedupe key from the tuple `(normalized_file, line // 5, symptom_first_8_words)`:
+
+- `normalized_file` strips the worktree / subproject prefix (e.g. `common/src/main/java/.../Foo.java` → `Foo.java`) so the same class flagged from two loaders collapses.
+- `line // 5` buckets nearby lines (within 5 lines of each other) into the same key. Catches the case where the reviewer points at the import statement and the log-watcher's stack trace points at the throw site five lines down.
+- `symptom_first_8_words` lowercases the first eight whitespace-tokenized words of the symptom. Stack traces and reviewer prose phrase the same NPE differently; eight words is enough discriminator for *kind* of error without over-fitting on punctuation.
+
+When two entries collide:
+1. Keep the higher-severity one (`hard_fail` > `warn`).
+2. If severities tie, prefer `source: "reviewer"` (it has the richest context — `suggested_fix` is already written in actionable English).
+3. Append the discarded entry's `source` to a `corroborated_by` array on the kept entry (e.g. `"corroborated_by": ["log-watcher"]`). The builder reads this and knows the finding was independently confirmed.
+
+When the file/line is unknown for *both* sides (e.g. two log-watcher entries about server-tick perf with no clear file), fall back to `symptom_first_8_words` alone for the key.
+
+Write the final queue to `state.json.kick_back_queue` (replacing any prior contents). Also write `runs/kick-back-NN/queue.json` with the same payload + the de-dupe trace (the discarded entries and which kept entry absorbed each one) for auditability. `NN` is `iteration_counts.kick_back + 1` zero-padded — i.e. the iteration number this queue *would* feed if the decision picks kick-back.
+
+#### 7c. Decision logic
+
+Compute these helpers from the freshly-aggregated queue and the reviewer's verdict:
+
+- `hard_fail_count` = entries with `severity == "hard_fail"`
+- `warn_count` = entries with `severity == "warn"`
+- `iterations_used` = `state.json.iteration_counts.kick_back` (rounds *completed*, not including the round being decided)
+- `reviewer_verdict` = `reviewer.verdict` from `runs/review.json`
+
+Decision table (evaluate top-to-bottom, first matching row wins):
+
+| Condition | Action |
+| --- | --- |
+| `reviewer_verdict == "needs_human"` | **Escalate** (7e). Regardless of iteration count or queue contents — the reviewer has flagged something only a human can resolve (scope drift, conflicting evidence, etc.) |
+| `hard_fail_count > 0` AND `iterations_used >= 3` AND `reviewer_verdict == "approve"` | **Approve with warnings logged** (7c-special). The cap is a *safety net*, not a strict block. If the reviewer's final-pass verdict is `approve` despite the cap being hit, advance to PR — but record the residual `hard_fail` entries in `state.json.last_error` for the PR body to surface. This is rare; in practice the reviewer's verdict will be `kick_back` or `needs_human` when there are still hard fails. |
+| `hard_fail_count > 0` AND `iterations_used >= 3` | **Escalate** (7e). Cap reached; surface to the human. |
+| `hard_fail_count > 0` AND `iterations_used < 3` | **Kick back** (7d). Spawn the builder with the queue; re-run Phase 5 → Phase 6 → Phase 7. |
+| `hard_fail_count == 0` AND `warn_count > 0` AND `reviewer_verdict == "approve"` | **Approve with warnings logged**. Advance to Phase 8 (PR). Write `state.json.phase_6_handoff.warnings_logged_at` (timestamp) and include the warn entries in the PR body. |
+| `hard_fail_count == 0` AND `warn_count > 0` AND `reviewer_verdict == "kick_back"` | **Kick back** if `iterations_used < 3`; the reviewer judged the warns serious enough. Same path as the third row above. |
+| `hard_fail_count == 0` AND `warn_count == 0` | **Approve** (queue is empty). Advance to Phase 8 (PR). |
+
+Whichever branch fires, **always** write the decision to `state.json.kick_back_history` if a round is starting (7d) or to `state.json.kick_back_escalation` if escalating (7e). Approval branches need no entry in either array.
+
+#### 7d. Kick-back execution
+
+When the decision is "kick back":
+
+1. **Increment counter and open a history entry.** Set `state.json.iteration_counts.kick_back += 1` and append a new in-progress entry to `state.json.kick_back_history`:
+
+   ```jsonc
+   {
+     "iteration": <iteration_counts.kick_back>,
+     "started_at": "<ISO-8601>",
+     "ended_at": null,
+     "bug_report_count": <queue length>,
+     "bug_reports": <verbatim queue>,
+     "builder_output_path": null,
+     "phase_6_rerun_summary": null,
+     "outcome": null
+   }
+   ```
+
+   Persist `state.json` (atomic write) *before* spawning the builder. If the builder run dies, resume reads the history entry and knows to pick up mid-round.
+
+2. **Spawn the builder.** Prefer the `Task` tool with `subagent_type: "builder"`. Fall back to `Agent(subagent_type: "general-purpose")` with the `agents/builder.md` body inlined (same fallback pattern as Phase 6's background spawn — see "Custom subagent fallback" at the end of this skill).
+
+   The builder prompt MUST include:
+
+   - **The structured bug-report queue verbatim.** Paste `state.json.kick_back_queue` as a JSON code block under a `## Bug reports to address` heading.
+   - **A pointer to the original architect's plan.** Pass the absolute path to `{RUN_DIR}/architect.json` so the builder can map bug reports onto work units via `work_unit_key` (when set). Also pass the relevant `work_items[i]` entries by `subtask_id` so the builder knows which worktrees / branches the original work lives on.
+   - **The full targets matrix** (verbatim from `state.json.targets_matrix`) under `## Target matrix (read first)`. Unchanged from Bootstrap.
+   - **A clear scope statement:** "Address these specific bug reports. Do NOT add new features. Do NOT touch files outside the diff of work units these bug reports map to, unless the suggested_fix explicitly calls for it. Re-run Tier-1 JUnit tests (`./gradlew test` or per-subproject) for any code you change before committing. Static-only validation — leave gametest / scenario / runClient to the orchestrator's later phases."
+   - **The `cannot_fix` escape hatch:** "If a bug report requires a library upgrade, a manual schema migration, a decision the user must make, or an architectural change beyond the work-unit boundary, return a `cannot_fix` outcome: emit a JSON object `{ outcome: 'cannot_fix', reasons: [...], partial_fixes: [...] }` and exit. This counts toward the iteration cap; the orchestrator surfaces it on the next aggregation pass."
+   - **Per-loader fanout instructions.** When bug reports span multiple loaders, the builder bootstraps a worktree per loader (per `WORKTREES.md`) and works in parallel — same pattern as the original Phase 4. Bug reports tagged `loader: "common"` go to the common worktree; loader-specific entries go to the matching `:fabric` or `:neoforge` worktree. Re-merge the worktrees into the feature branch when done.
+   - **Iteration context.** Tell the builder which iteration this is (`This is kick-back iteration <N> of 3.`) and that prior iterations' work is already on the feature branch — they're refining, not starting over.
+
+   The builder writes its return summary to `runs/kick-back-NN/builder-output.md` (where `NN` is the current `iteration_counts.kick_back` zero-padded) and commits with a message like `fix: kick-back <N> — <symptom one-liner>`.
+
+3. **Re-run Phase 5 (Doctor gate).** Same script invocation as the first Phase 5 pass. If doctor fails again, write the new doctor findings to `kick_back_queue` (replacing the prior contents from Phase 7), record `phase_6_rerun_summary: "doctor failed at re-gate: <hard_fail_count> hard_fail findings"`, and **return to Phase 7's aggregator** without running Phase 6. The next aggregation will see only the doctor entries; the decision logic still applies (typically another kick-back if iterations remain).
+
+4. **Re-run Phase 6 (Handoff).** Full Handoff cycle: the dev server restarts so the player can re-test if they want; background log-watcher / gametest / scenario / reviewer run as before. **If `--headless`**, skip the dev server and just run gametest-runner + scenario-runner + reviewer sequentially (per Phase 6f). All four output paths get fresh files (`runs/<loader>/watcher-report.json`, etc.); the orchestrator stores them in `state.json.phase_6_handoff` (overwriting the prior pass's pointers — the prior reports remain on disk for forensic comparison but `state.json` only tracks the latest).
+
+5. **Close the history entry.** When Phase 6 returns, fill in the open `kick_back_history` entry:
+
+   ```jsonc
+   {
+     "ended_at": "<ISO-8601>",
+     "builder_output_path": "kick-back/NN/builder-output.md",
+     "phase_6_rerun_summary": "<one-line aggregate: gametest pass/fail totals + reviewer verdict + watcher counts>",
+     "outcome": "address_succeeded" | "address_partial" | "escalated"
+   }
+   ```
+
+   Determining `outcome` requires another aggregation pass (step 6).
+
+6. **Return to Phase 7's aggregator (7b).** Read the freshly-written Phase 6 outputs, rebuild the queue, and run the decision again. This is the loop's natural recursion point:
+
+   - If the new decision is **approve** → the just-closed history entry gets `outcome: "address_succeeded"`. Advance to Phase 8.
+   - If the new decision is **kick back** AND the new queue is a strict subset of the prior queue (some bugs fixed, but new ones surfaced or partial fixes left holes) → close as `"address_partial"`, increment counter, open a new history entry, loop.
+   - If the new decision is **escalate** → close as `"escalated"`, write `kick_back_escalation`, surface to the user.
+
+   The builder's `cannot_fix` return is detected at this step: when the orchestrator parses `runs/kick-back-NN/builder-output.md` and finds `outcome: "cannot_fix"`, it treats the iteration as ended with `outcome: "escalated"` and writes a `kick_back_escalation` entry citing the builder's `reasons`. This bypasses the natural cap check — `cannot_fix` is an immediate escalation regardless of iteration count.
+
+#### 7e. Escalation
+
+When the decision is "escalate":
+
+1. **Write `state.json.kick_back_escalation`** with:
+
+   ```jsonc
+   {
+     "escalated_at": "<ISO-8601>",
+     "reason": "cap_reached" | "reviewer_needs_human" | "builder_cannot_fix",
+     "iteration_count": <iteration_counts.kick_back>,
+     "final_queue": <verbatim kick_back_queue>,
+     "recommendation": "<one paragraph: what you'd suggest the human do — e.g. 'Two of the three hard_fail findings are NPEs in the common ShopkeeperTickHandler; the third is a NeoForge-specific registry error that may need a NeoForge docs lookup. Recommend the human fix the NPEs manually and spawn a focused researcher for the registry error.'>",
+     "history_ref": "kick_back_history",
+     "diff_summary": "<output of `git diff <base_branch>..HEAD --stat`>"
+   }
+   ```
+
+   The `recommendation` is the orchestrator's best take — it has the full matrix view across iterations and can spot patterns (e.g. "every iteration the builder fixes Loader A but breaks Loader B" suggests an architectural issue, not a code bug).
+
+2. **Write `{RUN_DIR}/kick_back_escalation.json`** with the same payload — a standalone file makes it easy for the human to read without parsing the full `state.json`.
+
+3. **Surface to the user via `AskUserQuestion`** (inline mode) or by halting with `current_phase` set to `kick_back` and writing the escalation summary to `{RUN_DIR}/blocked.md` (headless mode, same pattern as the rest of the skill).
+
+4. **Do not advance to Phase 8.** The orchestrator pauses here; the human's next action (manual fix + resume, scope reduction, abandonment) determines what happens next.
+
+#### 7f. Loop bookkeeping
+
+- **`iteration_counts.kick_back`** is the canonical counter. It increments at the start of step 7d-1 and persists across resume.
+- **`kick_back_history`** is append-only. Each iteration gets exactly one entry, opened at the start of the round (step 7d-1) and closed when Phase 6 returns (step 7d-5). The history is the audit log; do not edit prior entries.
+- **`kick_back_queue`** is rebuilt from scratch on every Phase 7 entry. It's a *transient* working set — the snapshot lives in the history entry's `bug_reports` field.
+- **Atomic writes throughout.** Every state.json mutation (counter increment, history append, queue rebuild, escalation write) follows the standard atomic-write rule from CHECKPOINT.md.
+
+#### 7g. Edge cases
+
+- **Same bug reported by two sources.** Handled by the de-dupe rule in 7b. The higher-severity entry wins; the lower-severity entry's `source` is appended to a `corroborated_by` array on the kept entry. The builder reads this and knows the finding is independently confirmed.
+- **Builder returns `cannot_fix`.** This counts toward the iteration cap (it's a completed iteration even though no code changed). The orchestrator parses the builder's structured return, writes the open history entry with `outcome: "escalated"`, then writes `kick_back_escalation` with `reason: "builder_cannot_fix"`. Phase 6 is NOT re-run — the loop short-circuits to escalation. This is intentional: a `cannot_fix` means re-running Phase 6 would just surface the same bugs again.
+- **Iteration cap reached but reviewer's verdict was `approve` on the last pass.** Do NOT escalate; advance to PR. The cap is a safety net for cases where the reviewer keeps saying `kick_back` and the builder can't close the loop. If the reviewer is satisfied, the cap is moot. Record the residual entries in `state.json.last_error` so the PR body surfaces them (the human can decide whether to follow up).
+- **Headless mode.** Kick-back still works; just no dev-server restart between iterations. The headless code path through Phase 6 (per 6f) is identical regardless of which iteration triggered it. Builder, doctor re-gate, and gametest/scenario/reviewer all run; only the dev-server foreground is skipped. The `kick_back_history` entry's `phase_6_rerun_summary` should note the mode (e.g. `"headless — gametest 8/0, reviewer approve, no log-watcher coverage of player paths"`).
+- **Doctor fails mid-loop.** Treated in step 7d-3 above: when re-running Phase 5 after the builder commit, if doctor's verdict is `fail`, write the doctor findings to the queue and return to the aggregator without running Phase 6. The history entry for this iteration gets `phase_6_rerun_summary: "skipped — doctor re-gate failed"` and `outcome: "address_partial"`. The next iteration's builder gets the doctor entries directly.
+- **Empty queue but reviewer says `kick_back`.** Trust the reviewer's verdict — they're seeing something the deterministic aggregation missed (coverage gap, drift). Kick back with the reviewer's `coverage_gaps` rephrased as bug-reports with `severity: "warn"`. If `iterations_used >= 3`, escalate instead (the reviewer's instinct is real but the loop is out of runway).
+- **Two iterations produce identical queues.** Smell — the builder isn't making progress. The orchestrator checks: if the new queue's dedupe-key set is equal to the prior iteration's set, escalate immediately (don't wait for the cap). Write `kick_back_escalation` with `reason: "no_progress"` and include both queues in the recommendation. This catches the case where the bug is in the spec or the harness, not the code.
 
 ### 8. PR
 
@@ -322,8 +706,9 @@ After PR creation/refresh: update `state.json.pr` and set `current_phase = "comp
 ## Iteration limits
 
 - **Build phase**: 3 attempts before escalating.
-- **Scenario validation loop**: 5 iterations.
-- If the analyzer keeps producing similar diagnoses across iterations, the bug is probably in the scenario or the harness — escalate rather than thrash.
+- **Scenario validation loop**: 5 iterations (used by scenario-runner / scenario-analyzer when Tier-3 is available — still authoritative for that sub-loop even though scenarios now run inside Phase 6 in the background).
+- **Kick-back loop (Phase 7)**: 3 iterations. Tracked in `state.json.iteration_counts.kick_back`; history per iteration lives in `state.json.kick_back_history`. On cap-hit (or builder `cannot_fix`, or reviewer `verdict == "needs_human"`), Phase 7 writes `state.json.kick_back_escalation` and surfaces to the user — see Phase 7e.
+- If a downstream agent keeps producing similar diagnoses across iterations, the bug is probably in the harness or the spec — escalate rather than thrash.
 
 ## What you delegate vs. what you do
 
