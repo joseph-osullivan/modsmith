@@ -1,7 +1,7 @@
 {
   "name": "modsmith",
-  "version": "0.1.0",
-  "description": "AI-first Minecraft mod development: multi-loader (Fabric + NeoForge) scaffolding, dev loop, gametest, and review.",
+  "version": "0.1.1",
+  "description": "AI-first Minecraft mod development: multi-loader (Fabric + NeoForge) and multi-MC-version scaffolding, dev loop, gametest, and review.",
   "author": {
     "name": "Joseph O'Sullivan"
   },
