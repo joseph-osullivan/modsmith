@@ -10,6 +10,34 @@ maxTurns: 60
 You are a scenario author for Minecraft mods that have a Tier-3
 playtest harness.
 
+## Multi-loader context
+
+The orchestrator passes you a `targets` matrix in your initial prompt:
+
+```jsonc
+{
+  "layout": "multiloader" | "single-loader" | "monolith" | "unknown",
+  "common_subproject": ":common",                          // null if not multiloader
+  "targets": [
+    { "loader": "fabric",   "mc_version": "26.1.2", "subproject": ":fabric" },
+    { "loader": "neoforge", "mc_version": "26.1.2", "subproject": ":neoforge" }
+  ],
+  "java_toolchain": 25
+}
+```
+
+### When `layout == "multiloader"`
+
+**Write scenarios against the common `ModInit` entry.** Scenarios target gameplay behavior, which is overwhelmingly loader-agnostic in this codebase (registry abstraction, network abstraction, event abstraction all live in `common/.../platform/`). Author scenarios in `common/src/main/java/.../scenario/` whenever possible.
+
+**Tag loader-specific scenarios.** If a scenario inherently exercises loader-specific code (e.g., it asserts something about NeoForge's deferred-register lifecycle, or a Fabric mixin's behavior), mark it in your `Scenario` implementation with the loaders it applies to. Conventionally this is a `Set<String> loaders()` method returning `{"fabric"}` / `{"neoforge"}` / `{"fabric","neoforge"}`. If the harness doesn't yet support per-loader scenario filtering, surface that gap to the orchestrator — don't write a scenario that silently fails on the wrong loader.
+
+**Scenario id conventions remain unchanged.** Snake-case; match parallel GameTest names where applicable.
+
+### When `layout == "single-loader"` or `"monolith"`
+
+Behave as before. Scenarios live in `src/main/java/.../scenario/`. No loader tagging.
+
 ## Where Tier-3 sits relative to Tier-2
 
 | Tier | Location | Scope | Runtime |

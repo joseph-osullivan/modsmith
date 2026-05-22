@@ -21,6 +21,17 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
   "current_phase": "architect | research | plan | build | gametest | scenario | review | pr | complete",
   "completed_phases": ["architect", "research", "plan"],
 
+  "targets_matrix": {
+    "layout": "multiloader",
+    "common_subproject": ":common",
+    "targets": [
+      { "loader": "fabric",   "mc_version": "26.1.2", "loader_version": "0.18.6",        "subproject": ":fabric",   "java_toolchain": 25 },
+      { "loader": "neoforge", "mc_version": "26.1.2", "loader_version": "26.1.2.7-beta", "subproject": ":neoforge", "java_toolchain": 25 }
+    ],
+    "java_toolchain": 25,
+    "detection_notes": []
+  },
+
   "architect": {
     "status": "skipped | pending | complete",
     "output_ref": "architect.json",
@@ -104,6 +115,7 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 ## Field rules
 
 - **`version`** — always `"1"` for now. Bump if the schema changes incompatibly. Resumers must reject mismatched versions and ask the user.
+- **`targets_matrix`** — written once during bootstrap (verbatim from `scripts/detect-targets.sh`). The full set of `(loader, mc_version, loader_version, subproject, java_toolchain)` tuples for the run, plus `layout` and `common_subproject`. Passed to every downstream agent as first-class context (see SKILL.md "Pass the matrix to every downstream agent"). Use `layout` to decide whether `common_subproject` is meaningful (`null` for `single-loader`). The orchestrator does NOT mutate this field after bootstrap; re-running detection during resume should produce the same JSON unless the host project's gradle config changed.
 - **`parent_run_id`** — null for fresh runs; the prior `run_id` when this run is stacked on top of another (e.g. continuing work in the same PR). Used so the orchestrator can skip-back to read the parent's state if needed.
 - **`base_branch`** — the branch worktrees branch off from. `origin/main` for fresh runs; the parent run's feature branch when stacked. Required at run start.
 - **`extends_pr`** — null for fresh runs; the PR number when this run extends an existing PR (orchestrator uses the description-refresh pass at the end instead of opening a new PR).
@@ -113,6 +125,24 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 - **`work_items[].status`** — `pending` (no worktree) → `in-progress` (worktree created, builder running) → `completed` (builder returned success) → `merged` (branch merged into the run's main feature branch). `failed` is terminal until manually reset.
 - **`*.output_ref`** — relative path inside the run dir. The orchestrator never inlines large content here.
 - **`phase_status`** — counts how many subagent invocations each phase has consumed. Useful for resume diagnostics and detecting runaway iteration. Not a budget — the orchestrator paces against real-time session-context signals (see SKILL.md "Pace the run against your remaining session context"), not a fixed token budget.
+
+## `targets_matrix` examples
+
+A single-loader NeoForge repo (e.g. unmigrated lord-of-lands) emits:
+
+```json
+"targets_matrix": {
+  "layout": "single-loader",
+  "common_subproject": null,
+  "targets": [
+    { "loader": "neoforge", "mc_version": "26.1.2", "loader_version": "26.1.2.43-beta", "subproject": ":", "java_toolchain": 25 }
+  ],
+  "java_toolchain": 25,
+  "detection_notes": []
+}
+```
+
+If `detect-targets.sh` cannot find a recognized loader plugin, it exits with code 1 and `layout` is `"unknown"` (or `"monolith"` when a `minecraft_version` pin exists without a loader plugin); the orchestrator halts rather than proceeding.
 
 ## Write rules
 

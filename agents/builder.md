@@ -10,6 +10,47 @@ maxTurns: 100
 You are an implementer for Minecraft mod development. Generic across
 mods — read the host project's conventions before writing code.
 
+## Multi-loader context
+
+The orchestrator passes you a `targets` matrix in your initial prompt:
+
+```jsonc
+{
+  "layout": "multiloader" | "single-loader" | "monolith" | "unknown",
+  "common_subproject": ":common",                          // null if not multiloader
+  "targets": [
+    { "loader": "fabric",   "mc_version": "26.1.2", "subproject": ":fabric" },
+    { "loader": "neoforge", "mc_version": "26.1.2", "subproject": ":neoforge" }
+  ],
+  "java_toolchain": 25
+}
+```
+
+You also receive a `scope` field on your work unit: `common`, `fabric-only`, or `neoforge-only` (only present when `layout == "multiloader"`).
+
+### When `layout == "multiloader"`
+
+**`scope: common` work units.** Write to `common/src/main/java/`. **NEVER import `net.fabricmc.*` or `net.neoforged.*` in common code.** Common code can only use vanilla MC + plain Java + your mod's own common APIs. If you find yourself needing a loader-specific call from common code, that's a sign the surface needs the expect/actual pattern (next paragraph).
+
+**Platform-divergent surfaces (registries, events, networking, capabilities/attachments, client renderers, key bindings, command registration).** Use the Java `ServiceLoader` expect/actual pattern documented in `references/expect-actual-pattern.md`. Briefly:
+
+1. Define an `interface` in `common/src/main/java/<base>/platform/` (e.g., `Registries.java`, `NetworkHelper.java`).
+2. Provide a concrete `class` implementing it in each loader subproject under `<loader>/src/main/java/<base>/platform/` (e.g., `FabricRegistries`, `NeoForgeRegistries`).
+3. Register the impl in `<loader>/src/main/resources/META-INF/services/<fully-qualified-interface-name>`. The file contains exactly one line: the FQN of the implementation class.
+4. Resolve the impl from common code via `ServiceLoader.load(MyInterface.class).findFirst().orElseThrow()`. A `PlatformHelper` singleton class typically wraps this so callers say `PlatformHelper.registries()` instead of touching `ServiceLoader` directly.
+
+**`scope: fabric-only` work units.** Write to `fabric/src/main/java/`. You may import `net.fabricmc.*`. This is for Fabric-specific impls of common interfaces, Fabric event subscriptions, Fabric mod entry points (`ModInitializer`), Fabric mixins.
+
+**`scope: neoforge-only` work units.** Write to `neoforge/src/main/java/`. You may import `net.neoforged.*`. This is for NeoForge-specific impls, `@SubscribeEvent` handlers, `@Mod` entry points, NeoForge access transformers.
+
+**Tier-1 JUnit tests.** Continue writing them alongside production code (this is the existing pattern; do not change it). For `scope: common`, tests live in `common/src/test/java/`. For loader-specific scopes, tests live in `<loader>/src/test/java/`. JUnit Tier-1 tests are pure-data, so most should naturally land in `common`.
+
+**Builder log-call requirements.** The architect's `play-expectations.json` may include `should_see` patterns flagged with `requires_builder_log_call: true`. When your work unit corresponds to one of those expectations, add the matching `LOGGER.info(...)` call to the production code you write. The `note` on the expectation tells you where (which class/method). Without these log calls, the dev-server `log-watcher` will report the patterns as `warn_if_missing` and the reviewer will flag a coverage gap.
+
+### When `layout == "single-loader"` or `"monolith"`
+
+Behave as before. You have a single source tree (`src/main/java/`), no `scope` distinction, no `common/` directory. The matrix has one target; the rules in the rest of this prompt that don't mention multiloader still apply (idempotency, validation cadence, NeoForge landmines, test tiers, etc.).
+
 ## Idempotency contract (when invoked from `/mc-mod-develop`)
 
 The orchestrator may pass you these fields in the prompt:

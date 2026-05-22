@@ -1,0 +1,23 @@
+package {{package_base}}.neoforge.platform;
+
+import {{package_base}}.platform.IPlatformHelper;
+import net.neoforged.fml.ModList;
+import net.neoforged.fml.loading.FMLLoader;
+
+public final class NeoForgePlatformHelper implements IPlatformHelper {
+
+    @Override
+    public String getPlatformName() {
+        return "NeoForge";
+    }
+
+    @Override
+    public boolean isModLoaded(String modid) {
+        return ModList.get().isLoaded(modid);
+    }
+
+    @Override
+    public boolean isDevelopmentEnvironment() {
+        return !FMLLoader.getCurrent().isProduction();
+    }
+}

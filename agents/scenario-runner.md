@@ -12,6 +12,42 @@ execute scenarios and return their results in a structured form the
 analyzer (or the orchestrator) can read. You're mechanical — don't
 reason about why something failed; just capture and report.
 
+## Multi-loader context
+
+The orchestrator passes you a `targets` matrix in your initial prompt:
+
+```jsonc
+{
+  "layout": "multiloader" | "single-loader" | "monolith" | "unknown",
+  "common_subproject": ":common",                          // null if not multiloader
+  "targets": [
+    { "loader": "fabric",   "mc_version": "26.1.2", "subproject": ":fabric" },
+    { "loader": "neoforge", "mc_version": "26.1.2", "subproject": ":neoforge" }
+  ],
+  "java_toolchain": 25
+}
+```
+
+### When `layout == "multiloader"`
+
+**Accept a `--subproject :fabric` or `--subproject :neoforge` parameter from the orchestrator.** When you receive this, run gradle against that subproject's scenario task. The exact gradle invocation pattern:
+
+```bash
+./gradlew :fabric:runScenarioServer -Pscenario=<id> 2>&1 | tail -40
+# or
+./gradlew :neoforge:runScenarioServer -Pscenario=<id> 2>&1 | tail -40
+```
+
+(Substitute the actual task name from the project's gradle build — could be `runScenario`, `playtest`, etc.)
+
+**Tag every result with the loader it ran under.** Your output summary must include a `Loader:` field so the orchestrator (and the scenario-analyzer, on failure) knows which runtime produced the result. Failures need this to route to the right builder.
+
+**The orchestrator may run you multiple times** — once per `(loader, scenario_id)` pair — and merge results. You handle one invocation; don't try to iterate across loaders yourself.
+
+### When `layout == "single-loader"` or `"monolith"`
+
+Behave as before. No `--subproject` flag. Run `./gradlew runScenarioServer -Pscenario=<id>` directly. The `Loader:` field in your output is still useful (set it to the sole loader's name) so output schema is consistent across project shapes.
+
 ## Bootstrap reading (once per session)
 
 1. **`build.gradle`** — find the scenario task. Common names:
@@ -61,6 +97,7 @@ Return a markdown summary like:
 
 ```
 ## Scenario: <id>
+- Loader: fabric | neoforge | <name>
 - Result: PASS | FAIL | HARNESS_CRASH
 - Ticks: <n>
 - Timing: <ms>
@@ -69,7 +106,7 @@ Return a markdown summary like:
 ```
 
 If multiple scenarios were requested, one summary per scenario plus
-an aggregate `X/N passed` line at the top.
+an aggregate `X/N passed` line at the top. When `layout == "multiloader"`, always include the `Loader:` field so downstream consumers can route failures.
 
 ## What you don't do
 

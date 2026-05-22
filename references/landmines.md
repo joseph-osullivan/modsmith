@@ -1,15 +1,190 @@
-# Cross-run Minecraft API landmine index
+# Cross-run Minecraft + multi-loader landmine index
 
-Shared knowledge across `/mc-mod-develop` runs so a builder hitting a known
-API rename doesn't grind on it. Every entry traces to a real burn.
+Shared knowledge across modsmith runs so a builder hitting a known API
+rename or loader-config landmine doesn't grind on it. Every entry in the
+MC-API section traces to a real burn; the multi-loader section codifies
+gotchas that the planning docs and the modding community discover
+repeatedly.
 
-**Read protocol:** when a builder hits a "cannot find symbol" / class-not-found
-error in vendor MC code, grep this file by the missing symbol BEFORE spawning
-a researcher. If it's listed, apply the fix; if not, escalate as usual and
-*append the answer here* once resolved.
+**Read protocol:** when a builder hits a "cannot find symbol" /
+class-not-found error in vendor MC code, OR when a build/run fails with a
+multi-loader-flavored error (mods.toml not found, mixin refmap mismatch,
+ClassNotFoundException at runtime in prod), grep this file by the missing
+symbol / error fragment BEFORE spawning a researcher. If it's listed,
+apply the fix; if not, escalate as usual and *append the answer here*
+once resolved.
 
-**Format:** one heading per affected MC version, one bullet per rename/removal.
-Keep entries to ≤2 lines. Link the run that discovered it.
+**Format:** one heading per affected MC version OR landmine category, one
+bullet per rename/removal/gotcha. Keep entries to ≤2 lines. Link the run
+that discovered it.
+
+---
+
+## Multi-loader landmines (toolchain, not MC API)
+
+These are the highest-frequency gotchas when running modsmith across
+Fabric + NeoForge.
+
+### NeoForge ↔ MC version mapping (THE biggest hallucination risk)
+
+- **NeoForge 26.1.x targets Minecraft 26.1.x, NOT 1.21.x.** This is the
+  number-one mistake an LLM makes when writing release notes, gradle
+  versions, or upgrade guides. NeoForge dropped the `1.` prefix in step
+  with Mojang's MC 26.1 (the Mojang versioning change in late 2025).
+  Earlier line: NeoForge 21.1.x targets MC 1.21.1 (the current LTS). MC
+  1.21 (no patch) does NOT have a NeoForge line — neoforged.net jumped
+  straight to 21.1.
+- **Always read `gradle.properties` first** for `minecraft_version` and
+  `neoforge_version` before writing anything that mentions a version.
+  Never derive one from the other.
+- **Source of truth:** [`https://versions.neoforged.net`](https://versions.neoforged.net)
+  serves the canonical map. The `index.json` lists every active line; each
+  line lists `latest`/`recommended`. Use it to verify before committing
+  any version-y prose.
+
+### `mods.toml` → `neoforge.mods.toml`
+
+- **The manifest file is `neoforge.mods.toml` in current NeoForge** (renamed
+  some time around MC 1.20.5 / NeoForge 20.5). Most online tutorials, blog
+  posts, and Stack Overflow answers still say `mods.toml` — they lag the
+  rename by 6–12 months.
+- The file lives at `neoforge/src/main/resources/META-INF/neoforge.mods.toml`.
+  `/modsmith:doctor` hard-fails if it sees `mods.toml` at that path in a
+  modsmith project.
+- The file's TOML schema is identical to the old `mods.toml`; only the
+  filename changed.
+
+### Mixin refmap: Fabric requires it, NeoForge forbids it
+
+- **Fabric (via fabric-loom) generates a `mixin.refmap.json`** for each
+  mixin config at build time, and the `fabric.mod.json` references it via
+  the mixin's `refmap` field. Loom does this automatically.
+- **NeoForge (since NeoForge 20.x with ModDevGradle 2 and native mixin
+  support) does NOT use refmaps** and will reject a mixin config that
+  declares one (or silently fail to apply mixins, depending on version).
+- **A single mixin JSON naively shared between loaders breaks one of them.**
+  modsmith's templates generate the Fabric refmap at build time and emit a
+  pruned NeoForge-side mixin JSON without the `refmap` field. If you author
+  `common/src/main/resources/mymod.mixins.json`, do NOT add a `refmap`
+  field — the build task adds it only for the Fabric output.
+
+### Access transformer (NeoForge) vs Access widener (Fabric)
+
+- **NeoForge uses `accesstransformer.cfg`** (Forge syntax — `public-f
+  net.minecraft.world.entity.LivingEntity field_6224 someField`) at
+  `neoforge/src/main/resources/META-INF/accesstransformer.cfg`.
+- **Fabric uses `*.accesswidener`** (Fabric syntax — `accessible field
+  net/minecraft/world/entity/LivingEntity someField Lnet/minecraft/world/entity/AttributeMap;`)
+  at `fabric/src/main/resources/<modid>.accesswidener`, referenced from
+  `fabric.mod.json`.
+- **modsmith convention: author once in NeoForge's
+  `accesstransformer.cfg` and generate the Fabric `accesswidener` at
+  build time.** The templates include a Gradle task `generateAccessWidener`
+  that does the rewrite. Hand-editing the generated file is a landmine —
+  it will be overwritten on the next build.
+
+### `modImplementation` vs `implementation` in Fabric Loom
+
+- **In Fabric Loom, mod dependencies MUST use `modImplementation`
+  (not `implementation`).** `implementation` includes the JAR on the
+  classpath but does NOT run it through Loom's remapper. In dev it
+  appears to work; at runtime in a production JAR the remapped names
+  don't resolve and you get `ClassNotFoundException` / `NoSuchMethodError`.
+- This applies to ALL Fabric API modules, Fabric Loader, and any other
+  mod jar (e.g. Trinkets, Cloth Config).
+- `/modsmith:doctor` greps loader subproject build files and hard-fails on
+  raw `implementation 'net.fabricmc:fabric-api'` or `implementation
+  'net.neoforged:neoforge'`.
+- NeoForge under MDG uses regular `implementation`/`runtimeOnly` —
+  ModDevGradle handles the userdev transform at the plugin level, not the
+  dependency configuration level. The rule here is **Fabric only**.
+
+### Java toolchain by MC version
+
+- **MC 1.21.x ⇒ Java 21.**
+- **MC 26.x ⇒ Java 25.**
+- modsmith templates always declare:
+  ```gradle
+  java {
+      toolchain.languageVersion = JavaLanguageVersion.of(${java_version})
+  }
+  ```
+  in the root `subprojects {}` block. The Foojay resolver
+  (`org.gradle.toolchains.foojay-resolver-convention`) auto-downloads
+  the toolchain if not present. Users should not be running mismatched
+  JDKs locally — Gradle picks the toolchain regardless of
+  `JAVA_HOME`.
+- `/modsmith:doctor` reads the MC version from `gradle.properties` and
+  hard-fails if the toolchain doesn't match the rule.
+
+### NeoForge mod-bus vs game-bus events
+
+- **NeoForge has two event buses** and subscribing on the wrong one means
+  your handler silently never fires.
+- **Mod-bus:** lifecycle + registration events. Examples:
+  `FMLClientSetupEvent`, `FMLCommonSetupEvent`, `RegisterClientReloadListenersEvent`,
+  `RegisterRenderersEvent`, `RegisterEvent`, `DataPackRegistryEvent.NewRegistry`,
+  `BuildCreativeModeTabContentsEvent`. Get it from the `@Mod`
+  constructor's `IEventBus modEventBus` parameter, or via
+  `@EventBusSubscriber(modid="mymod", bus=Bus.MOD)`.
+- **Game-bus:** gameplay events. Examples: `PlayerTickEvent`,
+  `LivingHurtEvent`, `BreakBlockEvent`, `ServerStartedEvent`,
+  `EntityJoinLevelEvent`. Get it from `NeoForge.EVENT_BUS`, or via
+  `@EventBusSubscriber(modid="mymod")` (default bus is `GAME`).
+- **Subscribing in the wrong place silently no-ops.** No warning, no
+  error. The handler is registered to a bus that the event never fires
+  on.
+- Reference table:
+
+  | Symptom | Likely cause |
+  | --- | --- |
+  | `RegisterRenderersEvent` handler never fires | registered on game-bus instead of mod-bus |
+  | `PlayerTickEvent` handler never fires | registered on mod-bus instead of game-bus |
+  | `@EventBusSubscriber` class with mixed handlers | one of them is on the wrong bus |
+
+### Bootstrap entrypoint parameters differ between loaders
+
+- **NeoForge `@Mod` class** is constructed by FML with `(IEventBus modEventBus,
+  ModContainer container, Dist dist)` — the first parameter is always
+  `IEventBus`; the others can be omitted (FML picks the matching ctor).
+  ```java
+  @Mod("mymod")
+  public final class NeoForgeModInit {
+      public NeoForgeModInit(IEventBus modEventBus) {
+          ModInit.init();                                      // call into common
+          modEventBus.addListener(this::onCommonSetup);        // mod-bus subscriptions
+          NeoForge.EVENT_BUS.register(this);                   // game-bus subscriptions
+      }
+      private void onCommonSetup(FMLCommonSetupEvent event) { ... }
+  }
+  ```
+- **Fabric `ModInitializer.onInitialize()` takes nothing.** All Fabric
+  registration is global / static (`Registry.register(...)`,
+  `ServerLifecycleEvents.SERVER_STARTED.register(...)`, etc.).
+  ```java
+  public final class FabricModInit implements ModInitializer {
+      @Override public void onInitialize() {
+          ModInit.init();                                      // call into common
+          ServerLifecycleEvents.SERVER_STARTED.register(server -> { ... });
+      }
+  }
+  ```
+- **Common `ModInit.init()` must be parameterless** because it is called
+  from both. Anything bus-specific (registering an `@SubscribeEvent`,
+  scheduling an MDG mod-bus listener) happens in the loader subproject
+  AFTER `ModInit.init()` returns.
+
+### `@ExpectPlatform` is not used
+
+- modsmith uses **`java.util.ServiceLoader`** for expect/actual (see
+  `expect-actual-pattern.md`). It does NOT use Architectury, and
+  `@ExpectPlatform` annotations will not work — they require the
+  Architectury Loom variant and runtime, which modsmith deliberately does
+  not depend on.
+- **Anyone migrating from an Architectury project** must rewrite every
+  `@ExpectPlatform` static method as an interface on a
+  `common/.../platform/I*Helper.java` and provide one impl per loader
+  subproject, registered via `META-INF/services/`.
 
 ---
 
@@ -187,6 +362,18 @@ Keep entries to ≤2 lines. Link the run that discovered it.
 
 ---
 
+## Minecraft 1.21.1 (NeoForge 21.1.x LTS)
+
+This section seeded from the modsmith proving-ground (lord-of-lands) and
+the version-matrix; populate as new burns are discovered.
+
+- **`Tier.getLevel()` does NOT exist in 1.21.1.** Compare a `Tier` by
+  identity against the `Tiers` enum constants
+  (`tier == Tiers.IRON`, etc.). There is no numeric level accessor; the
+  enum-comparison pattern is canonical pre-26.
+
+---
+
 ## How to add an entry
 
 When a builder or researcher resolves an API change:
@@ -199,3 +386,6 @@ When a builder or researcher resolves an API change:
 3. If the rename has cross-cutting impact (touches >5 call sites), also add
    to the host project's `CLAUDE.md` "Active landmines" section. This file
    is the cross-run index; CLAUDE.md is the per-project rule sheet.
+4. **Multi-loader landmines** (toolchain, gradle, manifest, mixin/AT/AW)
+   go in the "Multi-loader landmines" section at the top, not the
+   per-MC-version sections.

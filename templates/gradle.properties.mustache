@@ -1,0 +1,40 @@
+# Single source of truth for all versions across :common, :fabric, :neoforge.
+# Subproject build.gradle files read these via project.findProperty(...).
+# Do NOT hardcode any version in subprojects; bump it here.
+
+# Project identity
+modid={{modid}}
+mod_name={{mod_name}}
+mod_version={{mod_version}}
+group={{package_base}}
+license={{license}}
+authors={{authors}}
+description={{description}}
+
+# Minecraft + Java
+mc_version={{mc_version}}
+mc_version_range=[{{mc_version}},)
+java_version={{java_version}}
+
+# NeoForm (the common-side decompiled vanilla MC artifact published by NeoForged).
+# Format is <mc_version>-<neoform_revision>. The revision is updated by NeoForged
+# independently of the NF runtime; see https://projects.neoforged.net/neoforged/neoform
+neoform_version={{mc_version}}-1
+
+# NeoForge runtime
+neoforge_version={{neoforge_version}}
+neoforge_loader_version_range=[4,)
+
+# Fabric Loader + API
+fabric_loader_version={{fabric_loader_version}}
+fabric_api_version={{fabric_api_version}}
+
+# Parchment mappings (used by both loaders for parameter names + javadocs).
+parchment_mc_version={{parchment_mc_version}}
+parchment_version={{parchment_version}}
+
+# Gradle
+org.gradle.jvmargs=-Xmx3G
+org.gradle.daemon=false
+org.gradle.parallel=true
+org.gradle.configuration-cache=false

@@ -1,0 +1,43 @@
+package {{package_base}}.platform;
+
+/**
+ * Loader-neutral platform query interface. Implementations live in the loader
+ * subprojects ({@code fabric/}, {@code neoforge/}) and are wired up via Java
+ * {@link java.util.ServiceLoader} — see {@code META-INF/services/} files.
+ *
+ * <p>Adding a method here implies you have a per-loader implementation ready
+ * to ship at the same time. {@code /modsmith:doctor} hard-fails on any
+ * interface in {@code platform/} without impls in both loader subprojects.
+ */
+public interface IPlatformHelper {
+
+    /**
+     * The display name of the currently running loader.
+     *
+     * @return {@code "Fabric"} or {@code "NeoForge"} — never null.
+     */
+    String getPlatformName();
+
+    /**
+     * Whether a mod with the given id is currently loaded.
+     *
+     * @param modid the mod id to test
+     * @return true iff the loader reports the mod as loaded
+     */
+    boolean isModLoaded(String modid);
+
+    /**
+     * Whether the current process is a development environment (gradle
+     * {@code runClient}/{@code runServer}) vs. a production launcher.
+     *
+     * @return true in dev, false in production
+     */
+    boolean isDevelopmentEnvironment();
+
+    /**
+     * Convenience: name of the environment (development/production).
+     */
+    default String getEnvironmentName() {
+        return isDevelopmentEnvironment() ? "development" : "production";
+    }
+}

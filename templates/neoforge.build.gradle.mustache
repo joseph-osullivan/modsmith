@@ -1,0 +1,109 @@
+// :neoforge subproject — NeoForged ModDevGradle (MDG).
+//
+// Mixin refmap: DISABLED. NeoForge bundles mixin support but rejects mixin
+// configs that ship a refmap (it does its own mapping). The default MDG
+// behavior already omits the refmap; do NOT add `useLegacyMixinAp` here.
+
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+def modid          = project.findProperty('modid')
+def mcVersion      = project.findProperty('mc_version')
+def neoForgeVer    = project.findProperty('neoforge_version')
+def parchmentMc    = project.findProperty('parchment_mc_version')
+def parchmentVer   = project.findProperty('parchment_version')
+
+configurations {
+    commonJava      { canBeResolved = true }
+    commonResources { canBeResolved = true }
+}
+
+dependencies {
+    commonJava      project(path: ':common', configuration: 'commonJava')
+    commonResources project(path: ':common', configuration: 'commonResources')
+
+    compileOnly         group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.5.3'
+    annotationProcessor group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.5.3'
+}
+
+tasks.named('compileJava', JavaCompile) {
+    dependsOn(configurations.commonJava)
+    source(configurations.commonJava)
+}
+
+tasks.named('sourcesJar', Jar) {
+    dependsOn(configurations.commonJava)
+    from(configurations.commonJava)
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}
+
+neoForge {
+    version = neoForgeVer
+
+    parchment {
+        minecraftVersion = parchmentMc
+        mappingsVersion  = parchmentVer
+    }
+
+    // Pull the AT from :common (single source of truth — see :fabric build
+    // for the auto-converted accesswidener side).
+    def at = project(':common').file('src/main/resources/META-INF/accesstransformer.cfg')
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+
+    runs {
+        configureEach {
+            systemProperty('neoforge.enabledGameTestNamespaces', modid)
+            ideName = "NeoForge ${it.name.capitalize()} (${project.path})"
+            logLevel = org.slf4j.event.Level.INFO
+        }
+        client {
+            client()
+            gameDirectory = this.mkdir(this.file('runs/client'))
+        }
+        server {
+            server()
+            this.file('runs/server').mkdirs()
+            gameDirectory = this.mkdir(this.file('runs/server'))
+        }
+        data {
+            clientData()
+            gameDirectory = this.mkdir(this.file('runs/data'))
+            // ./gradlew :neoforge:runData to regenerate assets/data via NeoForge datagen.
+            programArguments.addAll(
+                '--mod',      modid,
+                '--all',
+                '--output',   file('src/generated/resources/').absolutePath,
+                '--existing', file('src/main/resources/').absolutePath
+            )
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            gameDirectory = this.mkdir(this.file('runs/gametest'))
+        }
+    }
+
+    mods {
+        "${modid}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+processResources {
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+
+    // Note: we DO NOT run Gradle's `expand` over neoforge.mods.toml.
+    // The toml is fully concretized at scaffold time via Mustache, except
+    // for the literal `${file.jarVersion}` token, which NeoForge FML
+    // resolves at mod-load time from the jar manifest. Running expand
+    // here would try to evaluate `file.jarVersion` as a Groovy property
+    // and fail.
+}

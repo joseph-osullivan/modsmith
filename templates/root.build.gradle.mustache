@@ -1,0 +1,112 @@
+// Root build file. The plugin declarations here use `apply false` because
+// each subproject opts into the loader-specific plugin it needs. The shared
+// config for all three subprojects lives in the `subprojects {}` block below.
+
+plugins {
+    id 'java-library' apply false
+    id 'idea'
+    // Loader plugins declared but not applied at the root; subprojects apply.
+    id 'net.fabricmc.fabric-loom' version '1.15.5' apply false
+    id 'net.neoforged.moddev'    version '2.0.141' apply false
+}
+
+idea {
+    module {
+        // Hide build outputs from IDEA's project view.
+        excludeDirs += file('runs')
+        excludeDirs += file('logs')
+        excludeDirs += file('.gradle')
+    }
+}
+
+subprojects {
+    apply plugin: 'java-library'
+
+    // Resolve all versions from root gradle.properties. No hardcoded versions.
+    def modid             = project.findProperty('modid')
+    def modName           = project.findProperty('mod_name')
+    def modVersion        = project.findProperty('mod_version')
+    def modGroup          = project.findProperty('group')
+    def mcVersion         = project.findProperty('mc_version')
+    def javaVersion       = (project.findProperty('java_version') as String).toInteger()
+
+    group   = modGroup
+    version = modVersion
+
+    base {
+        archivesName = "${modid}-${project.name}-${mcVersion}"
+    }
+
+    java {
+        toolchain {
+            languageVersion = JavaLanguageVersion.of(javaVersion)
+        }
+        withSourcesJar()
+        // NeoForge / Fabric handle javadoc jars unevenly across plugins;
+        // omit by default. Add `withJavadocJar()` per-subproject if needed.
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+        options.release.set(javaVersion)
+    }
+
+    tasks.withType(Javadoc).configureEach {
+        options.encoding = 'UTF-8'
+    }
+
+    repositories {
+        mavenCentral()
+        maven {
+            name = 'NeoForged'
+            url  = uri('https://maven.neoforged.net/releases')
+        }
+        maven {
+            name = 'Fabric'
+            url  = uri('https://maven.fabricmc.net/')
+        }
+        maven {
+            name = 'ParchmentMC'
+            url  = uri('https://maven.parchmentmc.org/')
+        }
+        maven {
+            name = 'BlameJared'
+            url  = uri('https://maven.blamejared.com/')
+        }
+        // Modrinth Maven (mods + libraries distributed via Modrinth).
+        maven {
+            name = 'Modrinth'
+            url  = uri('https://api.modrinth.com/maven')
+            content {
+                includeGroup 'maven.modrinth'
+            }
+        }
+        // CurseMaven (mods + libraries distributed via CurseForge).
+        maven {
+            name = 'CurseMaven'
+            url  = uri('https://cursemaven.com')
+            content {
+                includeGroup 'curse.maven'
+            }
+        }
+    }
+
+    // Stamp every jar with build metadata so support requests can identify
+    // exact build provenance without re-running the build.
+    tasks.withType(Jar).configureEach {
+        from(rootProject.file('LICENSE')) {
+            rename { "${it}_${modName}" }
+        }
+        manifest {
+            attributes([
+                'Specification-Title'    : modName,
+                'Specification-Vendor'   : project.findProperty('authors'),
+                'Specification-Version'  : modVersion,
+                'Implementation-Title'   : project.name,
+                'Implementation-Version' : modVersion,
+                'Implementation-Vendor'  : project.findProperty('authors'),
+                'Built-On-Minecraft'     : mcVersion
+            ])
+        }
+    }
+}

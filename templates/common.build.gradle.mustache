@@ -1,0 +1,96 @@
+// :common subproject — vanilla Minecraft only. No loader runtime.
+//
+// We apply `net.neoforged.moddev` here *only* to pull in NeoForm-decompiled
+// vanilla MC via `neoFormVersion`. Setting `neoFormVersion` instead of
+// `version` means MDG provisions Mojmap'd vanilla MC bytecode WITHOUT
+// the NeoForge runtime — i.e. exactly the surface that's portable across
+// both Fabric and NeoForge. This is the canonical pattern used by
+// jaredlll08/MultiLoader-Template and effectively every multiloader mod
+// targeting MC 26.1.x.
+//
+// Concretely: no `net.neoforged.*` packages are on the compile classpath
+// here; only `net.minecraft.*` (and JDK stdlib). The doctor skill enforces
+// this with an import scan over common/.
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+def modid         = project.findProperty('modid')
+def neoFormVer    = project.findProperty('neoform_version')
+def parchmentMc   = project.findProperty('parchment_mc_version')
+def parchmentVer  = project.findProperty('parchment_version')
+
+neoForge {
+    // NeoForm only — no NeoForge runtime. This is what makes :common
+    // loader-neutral while still letting us compile against MC classes.
+    neoFormVersion = neoFormVer
+
+    // Parchment maps parameter names + adds javadocs on top of Mojmap.
+    parchment {
+        minecraftVersion = parchmentMc
+        mappingsVersion  = parchmentVer
+    }
+
+    // Pick up the AT if the user authored one. This is the single source of
+    // truth for access transforms; the :fabric subproject converts it to an
+    // accesswidener at build time.
+    def at = file('src/main/resources/META-INF/accesstransformer.cfg')
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+}
+
+// Mixin compile-time deps. Both Fabric and NeoForge ship MixinExtras at
+// runtime, so it's safe to compile against it from common.
+dependencies {
+    compileOnly         group: 'org.spongepowered',     name: 'mixin',                version: '0.8.5'
+    compileOnly         group: 'io.github.llamalad7',   name: 'mixinextras-common',   version: '0.5.3'
+    annotationProcessor group: 'io.github.llamalad7',   name: 'mixinextras-common',   version: '0.5.3'
+}
+
+// Gradle-side ${var} expansion for resources that benefit from build-time
+// substitution rather than scaffold-time. Today this is only pack.mcmeta —
+// the mixin config and mod manifests are fully concretized at scaffold time
+// via Mustache. Add new file patterns here as the resource tree grows.
+processResources {
+    def expandProps = [
+        'modid'                        : project.findProperty('modid'),
+        'mod_name'                     : project.findProperty('mod_name'),
+        'mod_version'                  : project.findProperty('mod_version'),
+        'mc_version'                   : project.findProperty('mc_version'),
+        'mc_version_range'             : project.findProperty('mc_version_range'),
+        'java_version'                 : project.findProperty('java_version'),
+        'license'                      : project.findProperty('license'),
+        'authors'                      : project.findProperty('authors'),
+        'description'                  : project.findProperty('description'),
+        'fabric_loader_version'        : project.findProperty('fabric_loader_version'),
+        'fabric_api_version'           : project.findProperty('fabric_api_version'),
+        'neoforge_version'             : project.findProperty('neoforge_version'),
+        'neoforge_loader_version_range': project.findProperty('neoforge_loader_version_range')
+    ]
+    inputs.properties(expandProps)
+    filesMatching(['pack.mcmeta']) {
+        expand expandProps
+    }
+}
+
+// Publish source + resource directories so loader subprojects can include
+// them on their compile classpath directly. This is the multiloader-style
+// "shared source set" trick: :fabric and :neoforge effectively re-compile
+// :common's sources alongside their own.
+configurations {
+    commonJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonResources {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+}
+
+artifacts {
+    commonJava sourceSets.main.java.sourceDirectories.singleFile
+    commonResources sourceSets.main.resources.sourceDirectories.singleFile
+}

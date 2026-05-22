@@ -45,18 +45,61 @@ Two hooks are also wired in `~/.claude/settings.json` and run automatically — 
 
 ### 1. Detect the host project
 
-- `build.gradle` — modloader, MC version, gradle task layout.
-- `gradle.properties` — `minecraft_version`, `mod_version`.
+#### 1a. Detect the target matrix (loaders × MC versions)
+
+Modsmith supports both **single-loader** repos (one root `build.gradle` applies `net.fabricmc.fabric-loom` *or* `net.neoforged.moddev`) and **multi-loader** repos (MultiLoader-Template-style `common/` + `fabric/` + `neoforge/` subprojects). The bootstrap detects which shape the host project has by calling a deterministic script and treats the output as the canonical target matrix for the run.
+
+Resolve the plugin install root and invoke the script:
+
+```bash
+# CLAUDE_PLUGIN_ROOT is set by Claude Code when the skill executes inside an
+# installed plugin. For locally-linked installs it points at the symlink target
+# (the modsmith repo). If it's unset (legacy / direct skill invocation),
+# fall back to walking up from this SKILL.md.
+MODSMITH_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+bash "$MODSMITH_DIR/scripts/detect-targets.sh"
+```
+
+The script emits a single JSON document with the schema documented in `scripts/detect-targets.sh` and `CHECKPOINT.md` (the `targets` / `layout` fields). Example:
+
+```jsonc
+{
+  "layout": "multiloader",            // "multiloader" | "single-loader" | "monolith" | "unknown"
+  "common_subproject": ":common",     // null when single-loader
+  "targets": [
+    { "loader": "fabric",   "mc_version": "26.1.2", "loader_version": "0.18.6",          "subproject": ":fabric",   "java_toolchain": 25 },
+    { "loader": "neoforge", "mc_version": "26.1.2", "loader_version": "26.1.2.7-beta",   "subproject": ":neoforge", "java_toolchain": 25 }
+  ],
+  "java_toolchain": 25,
+  "detection_notes": []
+}
+```
+
+Interpret the script's exit code:
+
+- `exit 0` → at least one target detected. Persist the entire JSON document as the `targets_matrix` field in `state.json` (see CHECKPOINT.md). Use the `targets` array, `common_subproject`, `layout`, and `java_toolchain` fields as first-class context throughout the run.
+- `exit 1` → `layout == "unknown"` (or `monolith` with no recognized loader plugin). Halt and surface the `detection_notes` to the user — this skill needs a recognizable loader.
+
+#### 1b. Pass the matrix to every downstream agent
+
+Every subsequent agent invocation (architect, builder, gametest-author, scenario-author, scenario-runner, scenario-analyzer, log-watcher, reviewer) MUST receive — as first-class context in the initial prompt — the matrix the script emitted. Concretely, include in each Agent invocation prompt:
+
+- `layout` (string) — so the agent knows whether it can write to `common/` or only to one subproject.
+- `common_subproject` (string-or-null) — only meaningful when `layout == "multiloader"`.
+- `targets` (array) — the full list of `(loader, mc_version, loader_version, subproject, java_toolchain)` tuples. Architects use it to tag work units `scope=common | fabric-only | neoforge-only`. Builders use the `subproject` to know which Gradle path their work lives under (`:` for single-loader, `:fabric` / `:neoforge` for multi-loader). Gametest/scenario runners fan out over the targets.
+- `java_toolchain` (int-or-null) — top-level toolchain hint; per-target toolchain may differ in mixed-MC-version matrices.
+
+Pass these as a structured block at the top of each Agent prompt under a heading like `## Target matrix (read first)`. **Do not paraphrase the JSON** — paste it verbatim so agents can parse it deterministically if they need to.
+
+#### 1c. Other capture work (still needed)
+
+In addition to the matrix, also capture from the host project:
+
 - `docs/` — proposals + workflow runs if present.
 - `./gradlew tasks --all | head -40` if you're not sure which custom tasks exist.
-
-Capture:
-
-- **Modloader**: NeoForge / Forge / Fabric / Quilt.
-- **MC version**.
 - **Test tiers available**:
-  - Tier 1 (JUnit) → `./gradlew test`
-  - Tier 2 (GameTest) → `./gradlew runGameTestServer`
+  - Tier 1 (JUnit) → `./gradlew test` (or `./gradlew :common:test` in multi-loader)
+  - Tier 2 (GameTest) → `./gradlew runGameTestServer` (or per-subproject `./gradlew :neoforge:runGameTestServer`)
   - Tier 3 (Scenarios) → `./gradlew runScenarioServer` or project-specific (NOT all mods have this — check `src/main/java/.../scenario/`)
 - **Build-time validation**: `./gradlew verifyMod` or similar.
 - **CI composite**: `./gradlew integrationCheck` or similar.

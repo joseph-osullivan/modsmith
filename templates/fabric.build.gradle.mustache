@@ -1,0 +1,195 @@
+// :fabric subproject — Fabric Loom.
+//
+// Mixin refmap: ENABLED (Loom's default). Loom auto-generates the refmap
+// during processResources and rewrites the mixin config to point at it.
+// Do not pass `useLegacyMixinAp = false` or similar — refmap is required
+// on Fabric.
+
+plugins {
+    id 'java-library'
+    id 'net.fabricmc.fabric-loom'
+}
+
+def modid              = project.findProperty('modid')
+def mcVersion          = project.findProperty('mc_version')
+def fabricLoaderVer    = project.findProperty('fabric_loader_version')
+def fabricApiVer       = project.findProperty('fabric_api_version')
+def parchmentMc        = project.findProperty('parchment_mc_version')
+def parchmentVer       = project.findProperty('parchment_version')
+
+// Source + resource inclusion from :common. We pull the raw source dirs in
+// (configurations published by :common's build.gradle), not a jar dependency,
+// because Loom needs to see vanilla MC compile alongside common sources for
+// the remapping pipeline to work cleanly.
+configurations {
+    commonJava      { canBeResolved = true }
+    commonResources { canBeResolved = true }
+}
+
+dependencies {
+    minecraft        "com.mojang:minecraft:${mcVersion}"
+    mappings loom.layered {
+        officialMojangMappings()
+        parchment("org.parchmentmc.data:parchment-${parchmentMc}:${parchmentVer}@zip")
+    }
+    modImplementation "net.fabricmc:fabric-loader:${fabricLoaderVer}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVer}"
+
+    // Compile :common's sources directly. project(":common") configurations
+    // expose the raw source + resource directories.
+    commonJava      project(path: ':common', configuration: 'commonJava')
+    commonResources project(path: ':common', configuration: 'commonResources')
+
+    compileOnly         group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.5.3'
+    annotationProcessor group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.5.3'
+}
+
+tasks.named('compileJava', JavaCompile) {
+    dependsOn(configurations.commonJava)
+    source(configurations.commonJava)
+}
+
+tasks.named('sourcesJar', Jar) {
+    dependsOn(configurations.commonJava)
+    from(configurations.commonJava)
+    dependsOn(configurations.commonResources)
+    from(configurations.commonResources)
+}
+
+// ---------------------------------------------------------------------------
+// AT -> AW conversion
+//
+// We author access transforms ONCE in common/src/main/resources/META-INF/
+// accesstransformer.cfg (NeoForge's native format) and generate the Fabric
+// accesswidener as a build artifact. This keeps a single source of truth
+// and avoids drift between loaders.
+//
+// AT syntax (NeoForge):
+//     public-f net.minecraft.world.entity.Mob f_21345_ # someField
+//     public   net.minecraft.world.entity.Mob m_xxx   # someMethod
+//
+// AW syntax (Fabric):
+//     accessWidener  v2  named
+//     accessible field net/minecraft/world/entity/Mob someField Ltype;
+//     mutable   field net/minecraft/world/entity/Mob someField Ltype;
+//     accessible method net/minecraft/world/entity/Mob someMethod ()V
+//
+// The conversion below handles the common subset (public/public-f -> accessible
+// + optional mutable). Complex AT directives that have no direct AW analogue
+// will produce a warning and be skipped; users hitting those should switch
+// to authoring the AW directly and disable this task.
+// ---------------------------------------------------------------------------
+def atFile = project(':common').file('src/main/resources/META-INF/accesstransformer.cfg')
+def awFile = layout.buildDirectory.file("generated/accesswideners/${modid}.accesswidener").get().asFile
+
+tasks.register('generateAccessWidener') {
+    description = "Generate Fabric accesswidener from common's accesstransformer.cfg"
+    group       = 'build'
+
+    inputs.file atFile
+    outputs.file awFile
+
+    onlyIf { atFile.exists() }
+
+    doLast {
+        awFile.parentFile.mkdirs()
+        def lines = ['accessWidener v2 named', '']
+        atFile.readLines('UTF-8').eachWithIndex { rawLine, idx ->
+            def line = rawLine.replaceFirst('#.*$', '').trim()
+            if (line.isEmpty()) return
+
+            def parts = line.split(/\s+/)
+            if (parts.length < 2) {
+                logger.warn("[AT->AW] line ${idx + 1}: unparseable, skipping: ${rawLine}")
+                return
+            }
+
+            def directive = parts[0]                 // e.g. public, public-f, protected
+            def clazz     = parts[1].replace('.', '/')
+            def member    = parts.length > 2 ? parts[2] : null
+
+            // Strip optional final-removal suffix ("-f").
+            def isFinalStrip = directive.endsWith('-f')
+            def access       = isFinalStrip ? directive.substring(0, directive.length() - 2) : directive
+
+            if (access != 'public' && access != 'protected') {
+                logger.warn("[AT->AW] line ${idx + 1}: unsupported access '${access}', skipping")
+                return
+            }
+
+            if (member == null) {
+                // Class-level AT.
+                lines << "accessible class ${clazz}"
+                if (isFinalStrip) lines << "extendable  class ${clazz}"
+                return
+            }
+
+            // Member-level. Heuristic: members starting with f_ or with no '('
+            // are fields; anything containing '(' is a method.
+            if (member.contains('(')) {
+                def methodName = member.substring(0, member.indexOf('('))
+                def descriptor = member.substring(member.indexOf('('))
+                lines << "accessible method ${clazz} ${methodName} ${descriptor}"
+                if (isFinalStrip) lines << "extendable  method ${clazz} ${methodName} ${descriptor}"
+            } else {
+                // Field. AW v2 requires a type descriptor; AT doesn't carry one.
+                // Without the type, we emit a warning and skip — users wanting
+                // field-AT support must add a sibling .aw fragment manually.
+                logger.warn("[AT->AW] line ${idx + 1}: field AT '${member}' on '${clazz}' has no type descriptor; AW requires one. Skipping.")
+            }
+        }
+        awFile.text = lines.join('\n') + '\n'
+        logger.lifecycle("[AT->AW] wrote ${awFile} (${lines.size()} lines)")
+    }
+}
+
+processResources {
+    dependsOn(configurations.commonResources, tasks.named('generateAccessWidener'))
+    from(configurations.commonResources)
+    from(awFile) {
+        into '/'
+    }
+
+    // fabric.mod.json: only the literal `${version}` token remains after
+    // scaffold-time Mustache expansion. Substitute that to project.version
+    // at build time so the published mod always carries the canonical
+    // project version, even if mod_version is updated mid-iteration.
+    def expandProps = [ 'version': project.version ]
+    inputs.properties(expandProps)
+    filesMatching(['fabric.mod.json']) {
+        expand expandProps
+    }
+}
+
+loom {
+    // Point Loom at the generated AW (only if the source AT exists).
+    if (atFile.exists()) {
+        accessWidenerPath.set(awFile)
+    }
+
+    runs {
+        client {
+            client()
+            setConfigName("Fabric Client")
+            ideConfigGenerated(true)
+            runDir('runs/client')
+        }
+        server {
+            server()
+            setConfigName("Fabric Server")
+            ideConfigGenerated(true)
+            runDir('runs/server')
+        }
+        data {
+            client()
+            setConfigName("Fabric Data")
+            ideConfigGenerated(true)
+            runDir('runs/data')
+            vmArg("-Dfabric-api.datagen")
+            vmArg("-Dfabric-api.datagen.output-dir=${file('src/generated/resources').absolutePath}")
+            vmArg("-Dfabric-api.datagen.modid=${modid}")
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
