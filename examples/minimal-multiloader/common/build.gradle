@@ -1,0 +1,54 @@
+// Top-level :common — pure Java only. NO Minecraft, NO loader runtime.
+//
+// This module compiles against vanilla Java SDK plus whatever third-party
+// libraries you add explicitly. It MUST NOT import anything from
+// net.minecraft.*, net.fabricmc.*, or net.neoforged.*. The doctor skill
+// hard-fails on any such import here.
+//
+// Use this module for MC-agnostic logic: math, codecs, state machines,
+// pure data structures, business rules — anything that doesn't actually
+// need to reach into the MC API. Code that needs MC types belongs in
+// versions/<mc>/common/ instead (one copy per MC line, because MC APIs
+// diverge across versions).
+//
+// Java toolchain: set to `java_version_shared` from gradle.properties,
+// which is the *highest* Java version across the targeted MC lines, so
+// :common bytecode runs cleanly on every MC line's JVM.
+plugins {
+    id 'java-library'
+}
+
+def sharedJava = (project.findProperty('java_version_shared') as String).toInteger()
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(sharedJava)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release.set(sharedJava)
+}
+
+base {
+    archivesName = "${project.findProperty('modid')}-common"
+}
+
+// Publish source + resource directories so per-MC subprojects can pull
+// :common's code in directly (same trick the single-MC scaffold uses).
+configurations {
+    commonJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonResources {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+}
+
+artifacts {
+    commonJava sourceSets.main.java.sourceDirectories.singleFile
+    commonResources sourceSets.main.resources.sourceDirectories.singleFile
+}

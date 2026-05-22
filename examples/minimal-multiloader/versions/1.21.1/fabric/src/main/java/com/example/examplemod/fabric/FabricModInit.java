@@ -1,0 +1,17 @@
+package com.example.examplemod.fabric;
+
+import com.example.examplemod.ModInit;
+import net.fabricmc.api.ModInitializer;
+
+/**
+ * Fabric entry point. Registered in {@code fabric.mod.json} under
+ * {@code entrypoints.main}. Delegates to the loader-neutral
+ * {@link ModInit#init()} after any Fabric-specific setup.
+ */
+public final class FabricModInit implements ModInitializer {
+
+    @Override
+    public void onInitialize() {
+        ModInit.init();
+    }
+}

@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.target.mc }} / ${{ matrix.target.loader }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+
+
+          - mc: "1.21.1"
+            loader: fabric
+            java: "21"
+            subproject: ":versions:1.21.1:fabric"
+
+
+          - mc: "1.21.1"
+            loader: neoforge
+            java: "21"
+            subproject: ":versions:1.21.1:neoforge"
+
+
+
+          - mc: "26.1.2"
+            loader: fabric
+            java: "25"
+            subproject: ":versions:26.1.2:fabric"
+
+
+          - mc: "26.1.2"
+            loader: neoforge
+            java: "25"
+            subproject: ":versions:26.1.2:neoforge"
+
+
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ matrix.target.java }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.target.java }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build ${{ matrix.target.mc }} ${{ matrix.target.loader }}
+        run: ./gradlew ${{ matrix.target.subproject }}:build --stacktrace
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: examplemod-${{ matrix.target.mc }}-${{ matrix.target.loader }}-jar
+          path: versions/${{ matrix.target.mc }}/${{ matrix.target.loader }}/build/libs/*.jar
+          if-no-files-found: ignore

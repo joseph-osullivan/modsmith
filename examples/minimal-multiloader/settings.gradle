@@ -1,0 +1,48 @@
+// Root settings file for a multi-MC × multi-loader scaffold.
+//
+// One :common subproject holds pure-Java (MC-agnostic) shared code.
+// Each MC line gets its own :versions:<mc>:common, :versions:<mc>:fabric,
+// and :versions:<mc>:neoforge subprojects. Per-MC pins live in
+// gradle.properties using the <key>_<mc_suffix> scheme (e.g.
+// `neoforge_version_26_1_2`); each subproject reads its own row via
+// project.findProperty(...).
+
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+        maven {
+            name = 'NeoForged'
+            url = uri('https://maven.neoforged.net/releases')
+        }
+        exclusiveContent {
+            forRepository {
+                maven {
+                    name = 'Fabric'
+                    url = uri('https://maven.fabricmc.net/')
+                }
+            }
+            filter {
+                includeGroupAndSubgroups('net.fabricmc')
+                includeGroup('fabric-loom')
+            }
+        }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'examplemod'
+
+include('common')
+
+include('versions:1.21.1:common')
+include('versions:1.21.1:fabric')
+include('versions:1.21.1:neoforge')
+
+include('versions:26.1.2:common')
+include('versions:26.1.2:fabric')
+include('versions:26.1.2:neoforge')
+

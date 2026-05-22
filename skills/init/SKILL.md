@@ -66,14 +66,16 @@ field-by-field mapping rules (in particular: `mc_suffix` is derived from
 of per-MC `java_version`s; `has_fabric`/`has_neoforge` flag per-MC
 loader inclusion).
 
-**Known caveat — `neoform_version`:** `resolve-versions.sh` does not
-emit NeoForm timestamps today. The translator inserts a `<mc>-1`
-placeholder so the rendered `gradle.properties` is structurally valid,
-but the user must bump each `neoform_version_<mc_suffix>` line to the
-real NeoForm revision (from
-<https://projects.neoforged.net/neoforged/neoform>) before the MDG
-build will succeed for that MC line. Surface this in the post-render
-"next steps" text when multi-MC mode is used.
+**`neoform_version`:** `resolve-versions.sh` queries
+<https://maven.neoforged.net/releases/net/neoforged/neoform/maven-metadata.xml>
+and resolves the latest NeoForm bytecode revision per MC line. The
+translator passes that through into each `mc_versions[]` row. If the
+network call fails or no artifact matches the requested MC, the
+translator falls back to a `<mc>-1` placeholder and sets the row's
+`neoform_version_is_placeholder` flag to `true`. In the placeholder
+case, surface a clear "replace neoform_version_<mc_suffix> before the
+:versions:<mc>:common build" note in the post-render text; in the
+happy path no follow-up is needed.
 
 ## Resolve the plugin install root
 
@@ -237,20 +239,28 @@ About to scaffold (multi-MC overlay):
   Top-level Java toolchain (shared :common): 25
   MC lines:
     - 1.21.1  Java 21  fabric 0.16.10 (api 0.111.0+1.21.1)  neoforge 21.1.230
-              parchment 1.21.1 / 2024.11.17
+              neoform 1.21.1-20240808.144430  parchment 1.21.1 / 2024.11.17
     - 26.1.2  Java 25  fabric 0.19.2  (api 0.149.1+26.1.2)  neoforge 26.1.2.64-beta
-              parchment 1.21.1 / 2024.11.17 (falls back to 1.21.1; none for 26.1 yet)
+              neoform 26.1.2-1  parchment 1.21.1 / 2024.11.17 (falls back to 1.21.1; none for 26.1 yet)
   License:       MIT
   Author:        josephd
 
 Render into:    <cwd>
 Layout:         common/ + versions/<mc>/{common,fabric,neoforge}/
 
-NOTE: neoform_version_<mc_suffix> is rendered as a `<mc>-1` placeholder.
-      You must update each per-MC neoform version before the NeoForge
-      MDG build will succeed.
-
 Proceed? [Y/n]
+```
+
+If any per-MC row in the translated vars.json has
+`neoform_version_is_placeholder: true`, additionally surface this note
+under the "Layout:" line:
+
+```
+NOTE: NeoForm version for <mc> could not be resolved. gradle.properties
+      will contain a `neoform_version_<mc_suffix>=<mc>-1` placeholder
+      that you must replace with the real revision from
+      https://maven.neoforged.net/releases/net/neoforged/neoform/
+      before the :versions:<mc>:common build will succeed.
 ```
 
 Use `AskUserQuestion` for the confirmation. Default Y. On `n`, exit
@@ -338,10 +348,9 @@ The renderer:
 - Auto-detects multi-MC mode by inspecting `vars.json` (mc_versions
   with 2+ entries).
 - Verifies no `{{...}}` placeholders survived; exits 1 if any did.
-- Drops a Gradle wrapper if `templates/gradle-wrapper/` exists OR if
-  `gradle` is on PATH. Otherwise prints a warning and the user will
-  need to run `gradle wrapper --gradle-version 9.2` themselves before
-  the build step.
+- Always drops a pinned Gradle 9.2 wrapper (jar + properties + gradlew
+  + gradlew.bat) into the scaffold from `templates/gradle-wrapper/`.
+  No `gradle` binary is required on the user's PATH.
 
 If the renderer exits non-zero, **stop** and surface its stderr. Do not
 attempt to clean up partial output — the user's cwd is now in an
@@ -385,9 +394,8 @@ still works, the user just won't have a clean commit history.
 
 ## Step 7 — prove the scaffold compiles
 
-Only run this step if a Gradle wrapper was successfully placed. If
-not, skip with a clear "Run `gradle wrapper --gradle-version 9.2`,
-then the loader-specific build targets" note.
+The renderer always ships a pinned Gradle 9.2 wrapper, so `./gradlew`
+is guaranteed to be present after Step 5.
 
 ### Single-MC mode
 
@@ -417,10 +425,11 @@ done
 ```
 
 `MC_VERSIONS` is the array of resolved MC versions (e.g.
-`(1.21.1 26.1.2)`) you kept after the mode selection in step 3. The
-per-MC neoforge subproject may fail if the user hasn't yet replaced
-the `<mc>-1` NeoForm placeholder in `gradle.properties` — surface
-that as a likely cause if it happens.
+`(1.21.1 26.1.2)`) you kept after the mode selection in step 3. If
+any per-MC row in the translated vars.json has
+`neoform_version_is_placeholder: true`, the `:versions:<mc>:common`
+build will fail until the placeholder is replaced — surface that as
+a likely cause when the placeholder flag is set.
 
 ### Both modes
 
@@ -430,9 +439,10 @@ green and you have a working baseline.
 
 If it fails, **do not retry blindly**. Show the user the gradle output,
 note the likely cause (network, Java version mismatch, version pin
-ahead of what's published, NeoForm placeholder still in
-gradle.properties for multi-MC mode), and exit. The scaffold itself is
-still valid; only the proof-build failed.
+ahead of what's published, or — in multi-MC mode with placeholder
+NeoForm versions — an unresolved `neoform_version_<mc_suffix>` line),
+and exit. The scaffold itself is still valid; only the proof-build
+failed.
 
 ## Step 8 — print next steps
 
@@ -446,6 +456,7 @@ Scaffold complete in <cwd>.
 
 Files rendered:
   build.gradle, settings.gradle, gradle.properties
+  gradlew, gradlew.bat, gradle/wrapper/ (pinned Gradle 9.2 wrapper)
   common/ (loader-neutral code + mixin config + AT)
   fabric/ (entrypoint + platform helper + manifest)
   neoforge/ (entrypoint + platform helper + manifest)
@@ -457,7 +468,10 @@ Next steps:
      Common-side code goes in common/src/main/java/<your.package>/;
      loader-specific impls of common interfaces live in the matching
      fabric/ and neoforge/ subprojects.
-  3. To verify the scaffold compiles green any time:
+  3. To verify the scaffold compiles green any time (no gradle install
+     required — the bundled wrapper downloads Gradle 9.2 on first run):
+        ./gradlew build
+     or, per loader:
         ./gradlew :fabric:build :neoforge:build
   4. To launch a dev client (Fabric or NeoForge):
         ./gradlew :fabric:runClient
@@ -477,19 +491,13 @@ Layout:
   versions/<mc>/common/                MC-touching shared, one copy per MC line
   versions/<mc>/fabric/                Loom per MC
   versions/<mc>/neoforge/              MDG per MC
+  gradlew, gradlew.bat, gradle/wrapper/  pinned Gradle 9.2 wrapper (bundled)
 
 MC lines scaffolded:
-  - 1.21.1  Java 21
-  - 26.1.2  Java 25
+  - 1.21.1  Java 21  neoform 1.21.1-20240808.144430
+  - 26.1.2  Java 25  neoform 26.1.2-1
   (per-MC pins live in gradle.properties with the <key>_<mc_suffix>
    scheme; see references/multiloader-layout.md `## Multi-MC layout`.)
-
-REQUIRED follow-up:
-  - gradle.properties contains placeholder NeoForm timestamps
-    (`neoform_version_<mc_suffix>=<mc>-1`). Replace each with the
-    real revision from
-    <https://projects.neoforged.net/neoforged/neoform> before the
-    NeoForge MDG build will succeed.
 
 Next steps:
   1. Open the project in IntelliJ.
@@ -498,7 +506,8 @@ Next steps:
      net.fabricmc.*, or net.neoforged.* type, move the file to
      versions/<mc>/common/ — `/modsmith:doctor` enforces this.
   3. Add gameplay code via `/modsmith:develop` (preferred) or by hand.
-  4. To verify each MC line compiles green:
+  4. To verify each MC line compiles green (no gradle install required —
+     the bundled wrapper downloads Gradle 9.2 on first run):
         ./gradlew :common:build
         ./gradlew :versions:1.21.1:fabric:build :versions:1.21.1:neoforge:build
         ./gradlew :versions:26.1.2:fabric:build :versions:26.1.2:neoforge:build
@@ -518,6 +527,23 @@ Next steps:
 Substitute the actual MC versions, Java toolchain, and per-MC pins
 into the template above.
 
+If any per-MC row in the vars.json has `neoform_version_is_placeholder:
+true` (resolver couldn't reach maven.neoforged.net or no NeoForm
+artifact matched the MC line), prepend a "REQUIRED follow-up" block to
+the Next steps:
+
+```
+REQUIRED follow-up:
+  - NeoForm version for <mc> is a placeholder
+    (`neoform_version_<mc_suffix>=<mc>-1`). Replace it with the real
+    revision from
+    <https://maven.neoforged.net/releases/net/neoforged/neoform/>
+    before running `:versions:<mc>:common:build`.
+```
+
+In the happy path (every row has the resolver-supplied NeoForm
+revision), omit this block entirely.
+
 ## Error handling
 
 - **Empty-dir check failed** → halt with the dir-not-empty message
@@ -535,9 +561,12 @@ into the template above.
   git to function.
 - **Gradle build failure** → show the relevant output, exit non-zero,
   but **leave the rendered files in place** so the user can inspect.
-  For multi-MC mode, the NeoForm placeholder
-  (`neoform_version_<mc_suffix>=<mc>-1`) is a likely culprit if the
-  per-MC `:versions:<mc>:neoforge:build` is what failed — surface that.
+  In multi-MC mode, if any vars.json row had
+  `neoform_version_is_placeholder: true` and the failing target was
+  `:versions:<mc>:common:build` (or anything downstream of it on the
+  same MC line), the unresolved NeoForm placeholder is the likely
+  cause — surface that. In the happy path (all NeoForm revisions were
+  resolved by the resolver), this hint should not fire.
 
 Never leave the cwd in a "half scaffolded" state from a known failure
 mode. If something goes wrong mid-render, the only thing that's hit

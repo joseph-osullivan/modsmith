@@ -25,13 +25,16 @@ Per-MC translation rules:
     mc_suffix             = mc_version with '.' -> '_'
     java_version          = resolver row's java_toolchain
     neoforge_version      = loaders.neoforge.loader_version   (nullable)
-    neoform_version       = `{mc_version}-1` placeholder (the resolver does
-                            not currently emit a NeoForm timestamp; the
-                            user is expected to bump this to the real
-                            timestamp from
-                            https://projects.neoforged.net/neoforged/neoform
-                            before running the MDG build. This mirrors the
-                            single-MC template's convention.)
+    neoform_version       = resolver row's neoform_version when present,
+                            else `{mc_version}-1` as a fallback placeholder.
+                            The resolver queries
+                            https://maven.neoforged.net/releases/net/neoforged/neoform/maven-metadata.xml
+                            and picks the latest revision matching the MC
+                            line. If the network call fails or no
+                            matching revision exists, the fallback
+                            placeholder is written and the user must
+                            replace it before the per-MC :common build
+                            succeeds.
     fabric_loader_version = loaders.fabric.loader_version
     fabric_api_version    = loaders.fabric.fabric_api_version
     parchment_mc_version  = parchment.mc                       (nullable)
@@ -98,17 +101,32 @@ def _translate_row(resolver_row: dict, selected_loaders: list[str]) -> dict:
     has_neoforge = ("neoforge" in selected_loaders) and bool(neo_loader_v)
     has_parchment = bool(parch and parch.get("mc") and parch.get("version"))
 
+    # NeoForm: prefer the resolver's resolved revision. If the resolver
+    # couldn't reach maven.neoforged.net or no artifact matched the MC
+    # line, fall back to a `<mc>-1` placeholder so the rendered
+    # gradle.properties is structurally valid. The skill surfaces the
+    # resolver's warning to the user when the fallback fires.
+    neoform_v = resolver_row.get("neoform_version")
+    neoform_is_placeholder = not bool(neoform_v)
+    if neoform_is_placeholder:
+        neoform_v = f"{mc_version}-1"
+        print(
+            f"warning: resolver did not return a NeoForm version for MC "
+            f"{mc_version}; writing placeholder '{neoform_v}'. The "
+            f":versions:{mc_version}:common build will fail until you "
+            f"replace neoform_version_{_mc_suffix(mc_version)} in "
+            f"gradle.properties with the real revision from "
+            f"https://maven.neoforged.net/releases/net/neoforged/neoform/",
+            file=sys.stderr,
+        )
+
     return {
         "mc_version": mc_version,
         "mc_suffix": _mc_suffix(mc_version),
         "java_version": int(java_toolchain),
         "neoforge_version": neo_loader_v,
-        # The resolver does not currently emit a NeoForm timestamp. The
-        # single-MC template uses `{mc_version}-1` as a placeholder; we
-        # mirror that here so the rendered gradle.properties is structurally
-        # valid. The user is expected to bump this to the real timestamp
-        # before invoking MDG. See SKILL.md "Multi-MC scaffolding".
-        "neoform_version": f"{mc_version}-1",
+        "neoform_version": neoform_v,
+        "neoform_version_is_placeholder": neoform_is_placeholder,
         "fabric_loader_version": fab_loader_v,
         "fabric_api_version": fab_api_v,
         "parchment_mc_version": parch.get("mc") if parch else None,

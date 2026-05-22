@@ -1,0 +1,104 @@
+// :versions:1.21.1:common — MC-touching shared code for MC 1.21.1.
+//
+// Compiles against vanilla MC (NeoForm-decompiled bytecode) without
+// pulling in any loader runtime. NO net.fabricmc.* or net.neoforged.*
+// imports allowed here; loader-specific code lives in the sibling
+// fabric/ and neoforge/ subprojects.
+//
+// MC APIs diverge across MC lines, so each MC has its own copy of this
+// subproject. To "fork" a shared class between MC versions, copy the
+// file from versions/<a>/common/.../Foo.java to versions/<b>/common/.../Foo.java
+// and adapt to <b>'s MC API; both keep the same FQN, and each loader
+// subproject sees the right version via subproject dependency.
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+def modid         = project.findProperty('modid')
+def mcVersion     = project.findProperty('mc_version_1_21_1')
+def neoFormVer    = project.findProperty('neoform_version_1_21_1')
+def parchmentMc   = project.findProperty('parchment_mc_version_1_21_1')
+def parchmentVer  = project.findProperty('parchment_version_1_21_1')
+def javaVersion   = (project.findProperty('java_version_1_21_1') as String).toInteger()
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaVersion)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release.set(javaVersion)
+}
+
+base {
+    archivesName = "${modid}-common-${mcVersion}"
+}
+
+dependencies {
+    // Pure-Java :common (MC-agnostic shared code).
+    implementation project(':common')
+
+    compileOnly         group: 'org.spongepowered',     name: 'mixin',                version: '0.8.5'
+    compileOnly         group: 'io.github.llamalad7',   name: 'mixinextras-common',   version: '0.5.3'
+    annotationProcessor group: 'io.github.llamalad7',   name: 'mixinextras-common',   version: '0.5.3'
+}
+
+neoForge {
+    // NeoForm only — vanilla MC bytecode without the NeoForge runtime.
+    neoFormVersion = neoFormVer
+
+    if (parchmentMc != null && parchmentVer != null) {
+        parchment {
+            minecraftVersion = parchmentMc
+            mappingsVersion  = parchmentVer
+        }
+    }
+
+    def at = file('src/main/resources/META-INF/accesstransformer.cfg')
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+}
+
+processResources {
+    def expandProps = [
+        'modid'                        : modid,
+        'mod_name'                     : project.findProperty('mod_name'),
+        'mod_version'                  : project.findProperty('mod_version'),
+        'mc_version'                   : mcVersion,
+        'mc_version_range'             : "[${mcVersion},)",
+        'java_version'                 : javaVersion.toString(),
+        'license'                      : project.findProperty('license'),
+        'authors'                      : project.findProperty('authors'),
+        'description'                  : project.findProperty('description'),
+        'fabric_loader_version'        : project.findProperty('fabric_loader_version_1_21_1'),
+        'fabric_api_version'           : project.findProperty('fabric_api_version_1_21_1'),
+        'neoforge_version'             : project.findProperty('neoforge_version_1_21_1'),
+        'neoforge_loader_version_range': project.findProperty('neoforge_loader_version_range') ?: '[4,)'
+    ]
+    inputs.properties(expandProps)
+    filesMatching(['pack.mcmeta']) {
+        expand expandProps
+    }
+}
+
+// Publish source + resource directories so loader subprojects can pull
+// these directly onto their compile classpath (same trick :common uses).
+configurations {
+    commonJava {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+    commonResources {
+        canBeResolved = false
+        canBeConsumed = true
+    }
+}
+
+artifacts {
+    commonJava sourceSets.main.java.sourceDirectories.singleFile
+    commonResources sourceSets.main.resources.sourceDirectories.singleFile
+}
