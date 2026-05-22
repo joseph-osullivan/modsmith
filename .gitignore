@@ -14,3 +14,5 @@ runs/
 # Local override of test fixtures
 examples/*/build/
 examples/*/runs/
+scripts/__pycache__/
+.claude/

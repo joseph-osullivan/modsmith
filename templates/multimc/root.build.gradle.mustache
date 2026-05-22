@@ -1,0 +1,98 @@
+// Root build file for a multi-MC × multi-loader scaffold.
+//
+// Layering:
+//   :common                          — pure Java, no MC, no loader deps
+//   :versions:<mc>:common            — MC-touching shared code for that MC
+//   :versions:<mc>:fabric            — Loom subproject for that MC
+//   :versions:<mc>:neoforge          — MDG (full NeoForge) for that MC
+//
+// The shared config in `subprojects {}` below applies to every subproject;
+// per-MC versions are resolved by each leaf subproject via the
+// MC-suffixed gradle.properties keys (e.g. `neoforge_version_26_1_2`).
+
+plugins {
+    id 'java-library' apply false
+    id 'idea'
+    id 'net.fabricmc.fabric-loom' version '1.15.5' apply false
+    id 'net.neoforged.moddev'    version '2.0.141' apply false
+}
+
+idea {
+    module {
+        excludeDirs += file('runs')
+        excludeDirs += file('logs')
+        excludeDirs += file('.gradle')
+    }
+}
+
+subprojects {
+    apply plugin: 'java-library'
+
+    def modid             = project.findProperty('modid')
+    def modName           = project.findProperty('mod_name')
+    def modVersion        = project.findProperty('mod_version')
+    def modGroup          = project.findProperty('group')
+
+    group   = modGroup
+    version = modVersion
+
+    // Each leaf subproject sets its own archivesName once it knows its MC.
+    // (Top-level :common is MC-agnostic, so it just uses project.name.)
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+    tasks.withType(Javadoc).configureEach {
+        options.encoding = 'UTF-8'
+    }
+
+    repositories {
+        mavenCentral()
+        maven {
+            name = 'NeoForged'
+            url  = uri('https://maven.neoforged.net/releases')
+        }
+        maven {
+            name = 'Fabric'
+            url  = uri('https://maven.fabricmc.net/')
+        }
+        maven {
+            name = 'ParchmentMC'
+            url  = uri('https://maven.parchmentmc.org/')
+        }
+        maven {
+            name = 'BlameJared'
+            url  = uri('https://maven.blamejared.com/')
+        }
+        maven {
+            name = 'Modrinth'
+            url  = uri('https://api.modrinth.com/maven')
+            content {
+                includeGroup 'maven.modrinth'
+            }
+        }
+        maven {
+            name = 'CurseMaven'
+            url  = uri('https://cursemaven.com')
+            content {
+                includeGroup 'curse.maven'
+            }
+        }
+    }
+
+    tasks.withType(Jar).configureEach {
+        from(rootProject.file('LICENSE')) {
+            rename { "${it}_${modName}" }
+        }
+        manifest {
+            attributes([
+                'Specification-Title'    : modName,
+                'Specification-Vendor'   : project.findProperty('authors'),
+                'Specification-Version'  : modVersion,
+                'Implementation-Title'   : project.name,
+                'Implementation-Version' : modVersion,
+                'Implementation-Vendor'  : project.findProperty('authors')
+            ])
+        }
+    }
+}
