@@ -287,6 +287,93 @@ If the blocker can't be resolved (researcher returns "this requires a deeper arc
 - accepts a documented scope reduction (the builder ships what's possible, blocker is a follow-up)
 - escalates to the user with the blocker on the table
 
+#### Multi-MC build ordering (when `layout == "multiloader-multi-mc"`)
+
+The single-MC ordering above ("common builder runs first, then loader builders in parallel after common merge") generalises to **three stages** when the host repo has per-MC overlays under `versions/<mc>/`. The architect's work-unit scopes drive the staging:
+
+- `scope: top-common` → Stage **4a** (top-level `common/`, shared across every MC line).
+- `scope: per-mc-common` → Stage **4b** (one builder per MC line, writes to `versions/<mc>/common/`).
+- `scope: per-mc-fabric` / `scope: per-mc-neoforge` → Stage **4c** (one builder per `(MC, loader)` pair, writes to `versions/<mc>/<loader>/`).
+
+```
+              ┌──────────────────────────────────────┐
+              │ Stage 4a — top-common builder        │
+              │ (1 builder, sequential)              │
+              │ scope=top-common work units          │
+              │ writes to: common/                   │
+              └──────────────────────┬───────────────┘
+                                     │ merge to working branch
+                                     ▼
+        ┌────────────────────────────┴────────────────────────────┐
+        │ Stage 4b — per-MC common builders (parallel)            │
+        │ (one builder per MC version in the matrix)              │
+        │ scope=per-mc-common work units, grouped by mc_version   │
+        │ writes to: versions/<mc>/common/                        │
+        └───┬──────────────────────┬──────────────────────────┬───┘
+            │ MC 1.21.1 builder    │ MC 26.1.2 builder        │ ...
+            │ writes to versions/  │ writes to versions/      │
+            │ 1.21.1/common/       │ 26.1.2/common/           │
+            └──────────────────────┴──────────────────────────┘
+                                     │ all merge to working branch
+                                     ▼
+        ┌────────────────────────────┴────────────────────────────┐
+        │ Stage 4c — per-MC loader builders (parallel)            │
+        │ (one builder per MC × loader pair in the matrix)        │
+        │ scope=per-mc-fabric / per-mc-neoforge, grouped by       │
+        │   (mc_version, loader)                                  │
+        │ writes to: versions/<mc>/<loader>/                      │
+        └──┬───────────────┬────────────────┬───────────────┬─────┘
+           │ 1.21.1×fabric │ 1.21.1×neoforge│ 26.1.2×fabric │ 26.1.2×neoforge
+           │               │                │               │
+           └───────────────┴────────────────┴───────────────┘
+                                     │ all merge to working branch
+                                     ▼
+                              (Phase 5 — Doctor)
+```
+
+**Dependency graph.** 4a must complete (and merge) before 4b starts. 4b's per-MC builders all run in parallel; **all** of them must complete (and merge) before 4c starts. 4c's per-(MC × loader) builders all run in parallel.
+
+For a 2 MC × 2 loader matrix the staging is: 1 builder (4a, sequential) → 2 builders in parallel (4b) → 4 builders in parallel (4c). Total: 7 builders across 3 stage barriers.
+
+**Per-stage rules.**
+
+1. **Stage 4a (top-common).** One builder, working on the run's feature branch directly (no worktree — there's only one builder in this stage). Receives every `scope: top-common` work unit from `architect.json`. Commits its work on the feature branch; the orchestrator marks each work_item complete and moves on.
+
+   - If `architect.json` has zero `top-common` work units, **skip 4a entirely** and proceed directly to 4b. Record `state.json.phase_4_build.stages["4a_top_common"].skipped = true`.
+
+2. **Stage 4b (per-MC common, parallel fanout).** For each `mc_version` in `targets_matrix.mc_commons[]`, gather every `scope: per-mc-common` work unit whose `mc_versions` array contains that MC. Bootstrap one worktree per MC (`scripts/bootstrap-worktree.sh per-mc-common-<mc>`) and spawn one builder per worktree **in the same tool-call batch** so they run in parallel.
+
+   Each Stage-4b builder receives:
+   - The full `targets_matrix` (verbatim, same contract as Bootstrap).
+   - A **filtered work-unit list**: only the `per-mc-common` units that include this MC in their `mc_versions` array. The builder writes those units into `versions/<mc>/common/`.
+   - The explicit MC version this builder owns (e.g., `target_mc_version: "1.21.1"`). This pin makes it easy for the builder to reject any work that drifts into another MC's tree.
+
+   Wait for all 4b builders to return. For each, merge via `scripts/merge-worktree.sh`. If any merge produces conflict, halt and surface to the user — common-level overlaps between MC lines almost always mean an architectural problem (a `top-common` candidate that the architect mis-classified as `per-mc-common`).
+
+   - If `architect.json` has zero `per-mc-common` work units, **skip 4b entirely** and proceed directly to 4c. Record `state.json.phase_4_build.stages["4b_per_mc_common"]` as an empty array.
+
+3. **Stage 4c (per-MC loader, parallel fanout).** For each `(mc_version, loader)` pair in `targets_matrix.targets[]`, gather every `scope: per-mc-<loader>` work unit whose `mc_versions` array contains that MC. Bootstrap one worktree per pair (`scripts/bootstrap-worktree.sh per-mc-<loader>-<mc>`) and spawn one builder per worktree **in the same tool-call batch**.
+
+   Each Stage-4c builder receives:
+   - The full `targets_matrix`.
+   - The pair this builder owns (`target_mc_version`, `target_loader`).
+   - The filtered work-unit list (per-mc-<loader> units that include this MC).
+
+   Wait for all 4c builders, merge each, surface conflicts to user.
+
+   - If `architect.json` has no `per-mc-fabric` / `per-mc-neoforge` work units for some `(MC, loader)` pair, **omit that pair from Stage 4c**. Stage 4c's parallelism is `min(matrix size, work units to dispatch)`.
+
+**State writes.** Stage boundaries are the resume-relevant points. After each stage completes (all parallel builders returned + all merges done), write `state.json.phase_4_build.stages` per the CHECKPOINT.md schema — record builder spawn IDs and ISO-8601 completion timestamps per stage. Atomic write the same as any other phase boundary.
+
+**Resume from mid-stage.** When a session resumes mid-Phase-4 in multi-MC mode, read `state.json.phase_4_build.stages` to determine which stage was in flight:
+- If `4a_top_common.completed_at` is null → re-run Stage 4a (idempotency contract on the builder handles the "already committed" case).
+- Else if any entry in `4b_per_mc_common` has `completed_at: null` → spawn only the missing 4b builders.
+- Else if any entry in `4c_per_mc_loader` has `completed_at: null` → spawn only the missing 4c builders.
+
+The `work_items[].status` field is still authoritative per-builder; the stages structure is a higher-level grouping that lets resume skip already-complete stages without re-walking every `work_item`.
+
+**Single-MC fallback.** When `layout != "multiloader-multi-mc"`, the orchestrator falls back to the original ordering documented at the top of Phase 4 ("common first, then per-loader in parallel"). The stage structure is not used; `state.json.phase_4_build.stages` stays absent.
+
 ### 5. Doctor gate
 
 After Build (and after every kick-back iteration), the orchestrator runs `/modsmith:doctor` non-interactively as a hard gate. Doctor's output is consumed as structured JSON — never paraphrase its findings into prose for the gate decision.
@@ -365,6 +452,29 @@ prefer ← state.json.preferred_loader  (if already set this run)
 
 Persist the resolved choice into `state.json.preferred_loader` so resume picks the same loader.
 
+##### Multi-MC: pick the preferred target (when `layout == "multiloader-multi-mc"`)
+
+In multi-MC mode, "loader" alone isn't enough — the foreground dev server attaches to a single **`(mc_version, loader)` pair**, i.e. one Gradle subproject like `:versions:26.1.2:neoforge`. Resolve a `preferred_target` subproject string in addition to (and consistent with) `preferred_loader`:
+
+```
+preferred_target ← state.json.preferred_target  (if already set this run)
+                ← --server-target :versions:<mc>:<loader>  (explicit wins;
+                  also accepted as the short forms <mc>:<loader> or
+                  <mc>/<loader>; orchestrator normalises to the colon form)
+                ← architect.json.preferred_target  (feature spec hint, optional;
+                  same syntax as the CLI flag)
+                ← gradle.properties: modsmith.preferred_target
+                ← latest MC × NeoForge from targets_matrix.targets[]  (a)
+                ← latest MC × first available loader (b)
+                ← targets_matrix.targets[0].subproject   (last resort, c)
+```
+
+"Latest MC" means the highest `mc_version` string from `targets_matrix.targets[].mc_version` under semver-ish ordering (split on `.`, compare numerically component-wise, then lexicographically for any non-numeric tails). If the matrix has both `1.21.1` and `26.1.2`, `26.1.2` wins.
+
+Resolve `preferred_loader` to the loader half of the resolved `preferred_target` so downstream paths (`runs/<loader>/...`) stay consistent. Persist both `state.json.preferred_target` (the full subproject string, e.g. `":versions:26.1.2:neoforge"`) and `state.json.preferred_loader` so resume picks the same pair.
+
+**Reject invalid `--server-target` values.** If the user-supplied target doesn't match any subproject in `targets_matrix.targets[]`, halt with an error listing the valid subprojects rather than silently falling back. This is a user-facing typo, not an automation gap.
+
 #### 6b. Start the dev server (foreground)
 
 ```bash
@@ -411,6 +521,14 @@ The orchestrator should try `Task` first and fall back to `Agent` on registry er
 
 v1 spawns one `log-watcher` for the foreground loader only; background loaders' play-session logs don't exist (no second MC client). `gametest-author` writes tests once for the whole repo. `gametest-runner` fans out to one per target. `reviewer` waits for gametest-runners to finish (the orchestrator gates the reviewer spawn on the runner harvest, or instructs the reviewer to consume runner artifacts that appear during its loop).
 
+**Multi-MC fanout (when `layout == "multiloader-multi-mc"`).** The cardinalities above stay the same in spirit, but "one per target" now means `len(targets_matrix.targets)` = MC count × loader count:
+
+- `gametest-runner`: one per `(mc_version, loader)` pair. A 2 MC × 2 loader matrix spawns **4** runners, all in the same tool-call batch. Each writes to `runs/<mc>/<loader>/gametest-results.json` (the per-MC subdirectory disambiguates results when multiple MC lines share a loader name).
+- `scenario-runner`: same fanout shape as `gametest-runner` (one per target). Output: `runs/<mc>/<loader>/scenario-results.json`.
+- `log-watcher`: still cardinality 1. It watches only the foreground dev server's log, which is whichever `(mc_version, loader)` was resolved as `preferred_target` in 6a. Output stays at `runs/<mc>/<loader>/watcher-report.json` for the foreground target only.
+- `reviewer`: still cardinality 1. It consumes every per-target result file across all `(mc_version, loader)` pairs and produces a single verdict spanning the whole matrix. Output: `runs/review.json` (unchanged).
+- `gametest-author`: still cardinality 1. Tests live in the source tree (top-common, per-mc-common, or per-mc-loader source sets) and are written once per logical test; the runners discover them per target.
+
 Each agent receives an absolute run-dir path and the targets matrix verbatim in its prompt (same contract as Bootstrap step 1b).
 
 #### 6e. Detect player exit, finalize, summarize
@@ -426,14 +544,46 @@ After exit:
 
 1. Record `state.json.phase_6_handoff.dev_server_ended_at` (ISO-8601).
 2. Wait for background agents to complete. Collect:
-   - `runs/<loader>/watcher-report.json` (log-watcher report) → `phase_6_handoff.log_watcher_report_path`
-   - `runs/<loader>/gametest-results.json` per target → `phase_6_handoff.gametest_results` (array)
-   - `runs/<loader>/scenario-results.json` per target (if applicable) → `phase_6_handoff.scenario_results` (array)
+   - `runs/<loader>/watcher-report.json` (log-watcher report) → `phase_6_handoff.log_watcher_report_path` (single-MC) / `runs/<mc>/<loader>/watcher-report.json` (multi-MC; the path always points at the foreground target)
+   - `runs/<loader>/gametest-results.json` per target → `phase_6_handoff.gametest_results` (array). In multi-MC mode the report path per target is `runs/<mc>/<loader>/gametest-results.json`.
+   - `runs/<loader>/scenario-results.json` per target (if applicable) → `phase_6_handoff.scenario_results` (array). Same per-MC path nesting in multi-MC mode.
    - `runs/review.json` → `phase_6_handoff.reviewer_report_path`
-3. **Compose the Handoff summary** (the structured aggregate of all findings) and print it. Format documented in `references/dev-server-playbook.md` (search for "The Handoff summary"). Record `state.json.phase_6_handoff.summary_printed = true` after printing.
+3. **Compose the Handoff summary** (the structured aggregate of all findings) and print it. Format documented in `references/dev-server-playbook.md` (search for "The Handoff summary"). Record `state.json.phase_6_handoff.summary_printed = true` after printing. In multi-MC mode, use the per-MC grouped layout below instead of the flat single-MC layout.
 4. Decide next phase:
    - If reviewer verdict is `approved` AND no `hard_fail` log-watcher findings AND all gametests pass: advance to Phase 8 (PR).
    - Otherwise: build a kick-back queue (reviewer's bug reports + log-watcher `hard_fail` findings + failing gametest details) and transition to Phase 7.
+
+##### Multi-MC summary layout (when `layout == "multiloader-multi-mc"`)
+
+When the matrix has multiple MC lines, the flat "one row per target" summary becomes hard to scan. Group results **by MC line first**, then list loaders under each MC. Format:
+
+```
+=== Handoff Summary ===
+Feature: <task description, from state.json.user_prompt (first line)>
+
+Dev server: :versions:26.1.2:neoforge (you exited after 8m 12s)
+
+MC 1.21.1:
+  fabric:    Tier-1 ✓ (14 tests) | GameTest ✓ (6) | Scenario ✓ (2)
+  neoforge:  Tier-1 ✓ (14 tests) | GameTest ✓ (6) | Scenario ✓ (2)
+MC 26.1.2:
+  fabric:    Tier-1 ✓ (14 tests) | GameTest ✓ (6) | Scenario ✗ (1 fail)
+  neoforge:  Tier-1 ✓ (14 tests) | GameTest ✓ (6) | Scenario ✓ (2)
+
+Log-watcher: 0 hard_fails, 1 warn (missing-texture)
+Reviewer: 2 bug reports, verdict: kick_back
+
+→ Proceeding to Phase 7 (kick-back loop, iteration 1/3)
+```
+
+Rules for rendering:
+
+- **MC ordering.** Ascending semver-ish (`1.21.1` before `26.1.2`), matching `targets_matrix` iteration order. Stable across re-runs so the player can diff summaries between iterations by eye.
+- **Loader ordering inside each MC.** Alphabetical (`fabric`, `forge`, `neoforge`, `quilt`). Stable.
+- **Glyphs.** `✓` for pass, `✗` for any hard-fail, `~` for warn-only. Use the exact glyphs above so the format is machine-greppable in transcripts.
+- **Tier-1 count.** Aggregate JUnit count for that target's subprojects (e.g. for MC × NeoForge, sum the `test` results in `:common`, `:versions:<mc>:common`, and `:versions:<mc>:neoforge`).
+- **Single-MC fallback.** When `layout != "multiloader-multi-mc"`, **keep the existing flat summary format** from `references/dev-server-playbook.md`. The grouped layout is multi-MC-only.
+- **Persist a structured grouping in state.** Write `state.json.phase_6_handoff.per_mc_results` (see CHECKPOINT.md schema) — keyed by `mc_version`, each value an object keyed by loader with the per-target counts. The printed summary is the human view; `per_mc_results` is the machine view that resume and Phase 7's aggregator both consume.
 
 #### 6f. Headless mode (`--headless`)
 
@@ -525,9 +675,20 @@ Read all four reports from disk (paths in `state.json.phase_6_handoff`). Build a
   "symptom": "<one sentence>",
   "suggested_fix": "<concrete change>",
   "severity": "hard_fail" | "warn",
-  "work_unit_key": "<idempotency token for the affected work unit, when derivable>"
+  "work_unit_key": "<idempotency token for the affected work unit, when derivable>",
+  "target": { "loader": "<...>", "mc_version": "<...>" }  // optional, multi-MC only
 }
 ```
+
+**Multi-MC target tagging (when `layout == "multiloader-multi-mc"`).** Every bug report that can be attributed to a specific `(mc_version, loader)` pair carries a `target` tuple. Set it from:
+
+- `gametest_results[i].failed > 0` → `target: { loader: target_loader, mc_version: target_mc_version }` taken verbatim from the failing entry (the runner already emits per-target results).
+- `scenario_results[i].failed > 0` → same as gametest.
+- `log-watcher.findings[]` → `target` = the foreground target (`state.json.preferred_target` parsed back into `{loader, mc_version}`). The log-watcher only ever runs against one target so this is unambiguous.
+- `reviewer.bug_reports[]` → use the reviewer's emitted `target` field if present; otherwise infer from the bug report's `file` path (`versions/1.21.1/fabric/...` → `{loader: "fabric", mc_version: "1.21.1"}`). If neither works, leave `target: null` (the builder will fan out to all matching targets).
+- `phase_5_doctor_result.findings[]` → use the doctor finding's `target` if present; otherwise infer from `file` path (same rule as reviewer). Leave `null` if the finding spans the whole repo (e.g. a top-common rule violation).
+
+In single-MC mode, omit the `target` field entirely from bug-report entries — there's only one target so the tag would be redundant.
 
 Promotion rules per source:
 
@@ -554,6 +715,14 @@ When two entries collide:
 3. Append the discarded entry's `source` to a `corroborated_by` array on the kept entry (e.g. `"corroborated_by": ["log-watcher"]`). The builder reads this and knows the finding was independently confirmed.
 
 When the file/line is unknown for *both* sides (e.g. two log-watcher entries about server-tick perf with no clear file), fall back to `symptom_first_8_words` alone for the key.
+
+**Multi-MC de-dupe extension (when `layout == "multiloader-multi-mc"`).** The base dedupe key strips the worktree / subproject prefix from `normalized_file`, which would collapse `versions/1.21.1/common/Foo.java` and `versions/26.1.2/common/Foo.java` into one entry — but in multi-MC mode that's wrong: those are two **forked** copies of the same class, and a bug in one is a bug in *that copy only* until proven otherwise. Extend the dedupe key with the entry's `target.mc_version`:
+
+- New key = `(normalized_file, line // 5, symptom_first_8_words, target.mc_version)`.
+- Two findings with the same file/line/symptom but **different** `mc_version` values stay as separate entries. They may point at forked-class bugs that need per-MC fixes.
+- Two findings with the same file/line/symptom and the **same** `mc_version` (or both `null`) still collapse per the base rule.
+
+Loader is NOT part of the dedupe key — a common-side bug surfaced via both Fabric and NeoForge runners is still one bug. Use `corroborated_by` to capture the multi-loader confirmation. The `target.loader` field stays on the kept entry as a hint to the builder; if multiple loaders independently flagged the same MC's common code, keep the `target.loader` from the higher-severity / reviewer-preferred entry and add a `corroborated_loaders: ["fabric", "neoforge"]` array.
 
 Write the final queue to `state.json.kick_back_queue` (replacing any prior contents). Also write `runs/kick-back-NN/queue.json` with the same payload + the de-dupe trace (the discarded entries and which kept entry absorbed each one) for auditability. `NN` is `iteration_counts.kick_back + 1` zero-padded — i.e. the iteration number this queue *would* feed if the decision picks kick-back.
 
@@ -612,6 +781,15 @@ When the decision is "kick back":
    - **The `cannot_fix` escape hatch:** "If a bug report requires a library upgrade, a manual schema migration, a decision the user must make, or an architectural change beyond the work-unit boundary, return a `cannot_fix` outcome: emit a JSON object `{ outcome: 'cannot_fix', reasons: [...], partial_fixes: [...] }` and exit. This counts toward the iteration cap; the orchestrator surfaces it on the next aggregation pass."
    - **Per-loader fanout instructions.** When bug reports span multiple loaders, the builder bootstraps a worktree per loader (per `WORKTREES.md`) and works in parallel — same pattern as the original Phase 4. Bug reports tagged `loader: "common"` go to the common worktree; loader-specific entries go to the matching `:fabric` or `:neoforge` worktree. Re-merge the worktrees into the feature branch when done.
    - **Iteration context.** Tell the builder which iteration this is (`This is kick-back iteration <N> of 3.`) and that prior iterations' work is already on the feature branch — they're refining, not starting over.
+
+   **Multi-MC builder fanout (when `layout == "multiloader-multi-mc"`).** Instead of one builder, the orchestrator may spawn multiple builders based on the queue's `target.mc_version` field:
+
+   - **All bug reports share the same `target.mc_version`** (or are all `target: null` / lack a `target` field) → spawn **one** builder for that MC. The builder uses the multi-MC scope rules from `agents/builder.md` (target subproject paths under `versions/<mc>/...`).
+   - **Bug reports span MC versions** (e.g. one report tagged `1.21.1` and another tagged `26.1.2`) → spawn **one builder per MC version**, in parallel (same tool-call batch). Each builder gets only the bug reports that match its MC plus any `target: null` reports (those are interpreted as "applies to every MC line in the queue"). This is the "fix the same logical bug in two forks" case — common when a forked-class bug is present in both `versions/1.21.1/common/Foo.java` and `versions/26.1.2/common/Foo.java`.
+
+   Each parallel builder gets its own worktree (`scripts/bootstrap-worktree.sh kick-back-NN-<mc>`) and writes to `runs/kick-back-NN/<mc>/builder-output.md`. After all builders return, the orchestrator merges each worktree back to the feature branch in deterministic MC order (ascending). Conflicts in this stage almost always indicate a top-common bug that the builder mis-scoped as per-mc — surface to the user rather than auto-resolve.
+
+   The single-MC code path (no `target` fields, or `layout != "multiloader-multi-mc"`) keeps the one-builder pattern unchanged.
 
    The builder writes its return summary to `runs/kick-back-NN/builder-output.md` (where `NN` is the current `iteration_counts.kick_back` zero-padded) and commits with a message like `fix: kick-back <N> — <symptom one-liner>`.
 

@@ -1733,45 +1733,59 @@ check_pinned_versions_fresh() {
 # ----------------------------------------------------------------------------
 
 check_forge_deps_via_modimpl() {
-  local fdir
-  fdir=$(loader_dir "fabric")
-  if [ -z "$fdir" ]; then
+  # Walk every Fabric build file detected in the matrix (one per (mc, fabric)
+  # pair in multi-MC; one in single-MC multiloader; potentially the root in
+  # single-loader fabric). The antipattern is the same across all of them.
+  local files=()
+  local i=0
+  local n=${#T_LOADER[@]}
+  while [ $i -lt $n ]; do
+    if [ "${T_LOADER[$i]}" = "fabric" ]; then
+      local d
+      d=$(subproject_dir "${T_SUBPROJECT[$i]}")
+      if [ -n "$d" ]; then
+        local bf
+        bf=$(subproject_build_file "$d")
+        [ -n "$bf" ] && files+=("$bf")
+      fi
+    fi
+    i=$((i + 1))
+  done
+
+  if [ ${#files[@]} -eq 0 ]; then
     add_finding "forge-deps-via-modimplementation" "hard_fail" "skip" "" "" \
       "skipped: no Fabric target detected" ""
     return 0
   fi
-  local fb
-  fb=$(subproject_build_file "$fdir")
-  if [ -z "$fb" ]; then
-    add_finding "forge-deps-via-modimplementation" "hard_fail" "skip" "" "" \
-      "skipped: no Fabric build file" ""
-    return 0
-  fi
+
   local any=0
-  while IFS=: read -r lineno line; do
-    [ -z "$lineno" ] && continue
-    # Skip lines that already use modImplementation / modApi etc.
-    if printf '%s' "$line" | grep -qE '^\s*(modImplementation|modApi|modRuntimeOnly|modCompileOnly)'; then
-      continue
-    fi
-    if ! printf '%s' "$line" | grep -qE '^\s*implementation[[:space:]]'; then
-      continue
-    fi
-    # Look for the mod-jar coordinate signals.
-    if printf '%s' "$line" | grep -qE '(curse\.maven|maven\.modrinth|com\.terraformersmc|teamreborn|cottonmc|trinkets|cloth-config|net\.fabricmc\.fabric-api|com\.github\.[A-Za-z]+)'; then
-      local msg
-      msg=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-      add_finding "forge-deps-via-modimplementation" "hard_fail" "fail" \
-        "$fb" "$lineno" \
-        "Fabric mod-jar dependency uses raw implementation (Loom won't remap): $msg" \
-        "Replace 'implementation' with 'modImplementation' so Loom remaps the jar (raw classpath inclusion breaks at runtime)"
-      any=1
-    fi
-  done < <(strip_gradle_comments "$fb" | nl -ba -s: 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  local fb
+  for fb in "${files[@]}"; do
+    while IFS=: read -r lineno line; do
+      [ -z "$lineno" ] && continue
+      # Skip lines that already use modImplementation / modApi etc.
+      if printf '%s' "$line" | grep -qE '^\s*(modImplementation|modApi|modRuntimeOnly|modCompileOnly)'; then
+        continue
+      fi
+      if ! printf '%s' "$line" | grep -qE '^\s*implementation[[:space:]]'; then
+        continue
+      fi
+      # Look for the mod-jar coordinate signals.
+      if printf '%s' "$line" | grep -qE '(curse\.maven|maven\.modrinth|com\.terraformersmc|teamreborn|cottonmc|trinkets|cloth-config|net\.fabricmc\.fabric-api|com\.github\.[A-Za-z]+)'; then
+        local msg
+        msg=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+        add_finding "forge-deps-via-modimplementation" "hard_fail" "fail" \
+          "$fb" "$lineno" \
+          "Fabric mod-jar dependency uses raw implementation (Loom won't remap): $msg" \
+          "Replace 'implementation' with 'modImplementation' so Loom remaps the jar (raw classpath inclusion breaks at runtime)"
+        any=1
+      fi
+    done < <(strip_gradle_comments "$fb" | nl -ba -s: 2>/dev/null | sed 's/^[[:space:]]*//' || true)
+  done
 
   if [ $any -eq 0 ]; then
     add_finding "forge-deps-via-modimplementation" "hard_fail" "pass" "" "" \
-      "all Fabric mod-jar dependencies use modImplementation" ""
+      "all Fabric mod-jar dependencies use modImplementation across every Fabric subproject" ""
   fi
 }
 
@@ -1779,52 +1793,104 @@ check_forge_deps_via_modimpl() {
 # Check 14: AT-AW-parity (warn if either side missing)
 # ----------------------------------------------------------------------------
 
-check_at_aw_parity() {
-  if [ "$LAYOUT" != "multiloader" ]; then
-    add_finding "AT-AW-parity" "warn" "skip" "" "" \
-      "skipped: layout=$LAYOUT (multiloader-only check)" ""
-    return 0
-  fi
-  local fdir ndir
-  fdir=$(loader_dir "fabric")
-  ndir=$(loader_dir "neoforge")
-  local cdir
-  cdir=$(subproject_dir "$COMMON_SUBPROJECT")
+# Returns 0 if the Fabric build file looks like it generates / consumes
+# an accesswidener (either has a `generateAccessWidener` task definition
+# or sets `accessWidenerPath` / references a `.accesswidener` file).
+__fabric_has_aw_pipeline() {
+  local fb="$1"
+  [ -f "$fb" ] || return 1
+  grep -qE '(generateAccessWidener|accessWidenerPath|\.accesswidener)' "$fb"
+}
+
+# Returns the first *.accesswidener file in a fabric subproject's source
+# resources (top-level, max-depth 1). Empty if none.
+__fabric_aw_file() {
+  local fdir="$1"
+  [ -d "$fdir/src/main/resources" ] || return 0
+  find "$fdir/src/main/resources" -maxdepth 1 -type f -name '*.accesswidener' 2>/dev/null | head -1
+  return 0
+}
+
+# Inner helper: given a triple (cdir, fdir, ndir), evaluate parity and
+# add a finding. Used both for single-MC multiloader and once per MC for
+# multi-MC.
+__at_aw_eval_one() {
+  local label="$1"
+  local cdir="$2"
+  local fdir="$3"
+  local ndir="$4"
 
   local at_path=""
-  local aw_path=""
   if [ -n "$cdir" ] && [ -f "$cdir/src/main/resources/META-INF/accesstransformer.cfg" ]; then
     at_path="$cdir/src/main/resources/META-INF/accesstransformer.cfg"
   elif [ -n "$ndir" ] && [ -f "$ndir/src/main/resources/META-INF/accesstransformer.cfg" ]; then
     at_path="$ndir/src/main/resources/META-INF/accesstransformer.cfg"
   fi
-  if [ -n "$fdir" ]; then
-    aw_path=$(find "$fdir/src/main/resources" -maxdepth 1 -type f -name '*.accesswidener' 2>/dev/null | head -1)
+  local aw_path=""
+  [ -n "$fdir" ] && aw_path=$(__fabric_aw_file "$fdir")
+  local fab_build=""
+  [ -n "$fdir" ] && fab_build=$(subproject_build_file "$fdir")
+  local aw_pipeline=0
+  if [ -n "$fab_build" ] && __fabric_has_aw_pipeline "$fab_build"; then
+    aw_pipeline=1
   fi
 
-  if [ -z "$at_path" ] && [ -z "$aw_path" ]; then
+  if [ -z "$at_path" ] && [ -z "$aw_path" ] && [ $aw_pipeline -eq 0 ]; then
     add_finding "AT-AW-parity" "warn" "skip" "" "" \
-      "skipped: neither accesstransformer.cfg nor *.accesswidener present" ""
+      "skipped${label}: neither accesstransformer.cfg nor *.accesswidener nor an AW build pipeline present" ""
     return 0
   fi
 
-  if [ -n "$at_path" ] && [ -z "$aw_path" ]; then
+  if [ -n "$at_path" ] && [ -z "$aw_path" ] && [ $aw_pipeline -eq 0 ]; then
     add_finding "AT-AW-parity" "warn" "fail" \
       "$at_path" "" \
-      "accesstransformer.cfg present but no Fabric *.accesswidener generated" \
-      "Add a Gradle task in fabric/build.gradle that generates <modid>.accesswidener from $at_path (see references/landmines.md)"
+      "accesstransformer.cfg${label} present but no Fabric *.accesswidener (or AT->AW generator task) found" \
+      "Add a Gradle task in $fdir/build.gradle that generates <modid>.accesswidener from $at_path (see references/landmines.md)"
     return 0
   fi
   if [ -n "$aw_path" ] && [ -z "$at_path" ]; then
     add_finding "AT-AW-parity" "warn" "fail" \
       "$aw_path" "" \
-      "*.accesswidener present but no NeoForge accesstransformer.cfg — NeoForge will not see the access changes" \
+      "*.accesswidener${label} present but no NeoForge accesstransformer.cfg — NeoForge will not see the access changes" \
       "Author $cdir/src/main/resources/META-INF/accesstransformer.cfg (or neoforge equivalent) and either generate the AW from it or keep both in sync"
     return 0
   fi
-  # Both present: pass.
   add_finding "AT-AW-parity" "warn" "pass" "" "" \
-    "both accesstransformer.cfg and *.accesswidener present" ""
+    "AT and AW are in parity${label}" ""
+}
+
+check_at_aw_parity() {
+  if ! is_any_multiloader; then
+    add_finding "AT-AW-parity" "warn" "skip" "" "" \
+      "skipped: layout=$LAYOUT (multiloader-only check)" ""
+    return 0
+  fi
+
+  if [ "$MULTI_MC" = "1" ]; then
+    local mcs
+    mcs=$(unique_mcs)
+    if [ -z "$mcs" ]; then
+      add_finding "AT-AW-parity" "warn" "skip" "" "" \
+        "skipped: no MC versions detected in multi-MC layout" ""
+      return 0
+    fi
+    while IFS= read -r mc; do
+      [ -z "$mc" ] && continue
+      # Resolve per-MC dirs.
+      local cdir="versions/$mc/common"; [ -d "$cdir" ] || cdir=""
+      local fdir="versions/$mc/fabric"; [ -d "$fdir" ] || fdir=""
+      local ndir="versions/$mc/neoforge"; [ -d "$ndir" ] || ndir=""
+      __at_aw_eval_one " (MC $mc)" "$cdir" "$fdir" "$ndir"
+    done <<< "$mcs"
+    return 0
+  fi
+
+  # Single-MC multiloader (v0.1.0 behavior).
+  local fdir ndir cdir
+  fdir=$(loader_dir "fabric")
+  ndir=$(loader_dir "neoforge")
+  cdir=$(subproject_dir "$COMMON_SUBPROJECT")
+  __at_aw_eval_one "" "$cdir" "$fdir" "$ndir"
 }
 
 # ----------------------------------------------------------------------------
@@ -1890,6 +1956,295 @@ check_single_loader_upgrade() {
     "Run /modsmith:develop with task 'migrate to multi-loader' to get a phased decomposition (gradle restructure → registry → events → network → NBT → client). See references/multiloader-layout.md"
 }
 
+# ============================================================================
+# Multi-MC specific checks (HARD_FAIL, multi-MC only).
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Check 17: top-common-pure-java
+#
+# Top-level common/src/main/java/ must NOT contain any net.minecraft.* imports.
+# This is the load-bearing rule for the multi-MC overlay layout: code that
+# references MC types belongs in versions/<mc>/common/ (one copy per MC line),
+# because MC APIs diverge across versions.
+# ----------------------------------------------------------------------------
+
+check_top_common_pure_java() {
+  if [ "$MULTI_MC" != "1" ]; then
+    add_finding "top-common-pure-java" "hard_fail" "skip" "" "" \
+      "skipped: multi-MC-only check (layout=$LAYOUT)" ""
+    return 0
+  fi
+  local cdir
+  cdir=$(subproject_dir "$COMMON_SUBPROJECT")
+  if [ -z "$cdir" ] || [ ! -d "$cdir/src/main/java" ]; then
+    add_finding "top-common-pure-java" "hard_fail" "skip" "" "" \
+      "skipped: no top-level common/src/main/java (multi-MC layout but :common module missing)" ""
+    return 0
+  fi
+  local any_fail=0
+  while IFS= read -r -d '' f; do
+    while IFS=: read -r lineno line; do
+      [ -z "$lineno" ] && continue
+      local msg
+      msg=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+      add_finding "top-common-pure-java" "hard_fail" "fail" \
+        "$f" "$lineno" \
+        "top-level :common imports MC: $msg — top-level common must be pure Java" \
+        "Move this class to versions/<mc>/common/ for each MC version that uses it, OR remove the MC import if the logic can be made MC-agnostic"
+      any_fail=1
+    done < <(grep -nE '^[[:space:]]*import[[:space:]]+net\.minecraft\.' "$f" 2>/dev/null || true)
+  done < <(find "$cdir/src/main/java" -type f -name '*.java' -print0 2>/dev/null)
+  if [ $any_fail -eq 0 ]; then
+    add_finding "top-common-pure-java" "hard_fail" "pass" "" "" \
+      "top-level common/src/main/java has no net.minecraft.* imports (pure Java)" ""
+  fi
+}
+
+# ----------------------------------------------------------------------------
+# Check 18: per-mc-subproject-coverage
+#
+# For each MC line in the matrix, all three subprojects must exist when the
+# user opted into both loaders: versions/<mc>/common, versions/<mc>/fabric,
+# versions/<mc>/neoforge. Missing directories suggest a broken scaffold.
+# ----------------------------------------------------------------------------
+
+check_per_mc_subproject_coverage() {
+  if [ "$MULTI_MC" != "1" ]; then
+    add_finding "per-mc-subproject-coverage" "hard_fail" "skip" "" "" \
+      "skipped: multi-MC-only check (layout=$LAYOUT)" ""
+    return 0
+  fi
+  # Decide which loaders the project opted into by inspecting the union of
+  # loaders across the matrix. If both fabric and neoforge appear anywhere,
+  # both must be present for every MC.
+  local has_fabric=0
+  local has_neoforge=0
+  local i=0
+  local n=${#T_LOADER[@]}
+  while [ $i -lt $n ]; do
+    [ "${T_LOADER[$i]}" = "fabric" ] && has_fabric=1
+    [ "${T_LOADER[$i]}" = "neoforge" ] && has_neoforge=1
+    i=$((i + 1))
+  done
+  local any_fail=0
+  local mcs
+  mcs=$(unique_mcs)
+  if [ -z "$mcs" ]; then
+    add_finding "per-mc-subproject-coverage" "hard_fail" "skip" "" "" \
+      "skipped: no MC versions detected in multi-MC layout" ""
+    return 0
+  fi
+  while IFS= read -r mc; do
+    [ -z "$mc" ] && continue
+    if [ ! -d "versions/$mc/common" ]; then
+      add_finding "per-mc-subproject-coverage" "hard_fail" "fail" \
+        "versions/$mc/common" "" \
+        "missing versions/$mc/common/ subproject — every MC line must have its own MC-touching :common" \
+        "Re-run /modsmith:init for this MC, or create versions/$mc/common/ + build.gradle (see references/multiloader-layout.md ## Multi-MC layout)"
+      any_fail=1
+    fi
+    if [ $has_fabric -eq 1 ] && [ ! -d "versions/$mc/fabric" ]; then
+      add_finding "per-mc-subproject-coverage" "hard_fail" "fail" \
+        "versions/$mc/fabric" "" \
+        "missing versions/$mc/fabric/ subproject — Fabric was selected but this MC has no Fabric subproject" \
+        "Re-run /modsmith:init to render Fabric for this MC, or remove the MC from the matrix"
+      any_fail=1
+    fi
+    if [ $has_neoforge -eq 1 ] && [ ! -d "versions/$mc/neoforge" ]; then
+      add_finding "per-mc-subproject-coverage" "hard_fail" "fail" \
+        "versions/$mc/neoforge" "" \
+        "missing versions/$mc/neoforge/ subproject — NeoForge was selected but this MC has no NeoForge subproject" \
+        "Re-run /modsmith:init to render NeoForge for this MC, or remove the MC from the matrix"
+      any_fail=1
+    fi
+  done <<< "$mcs"
+  if [ $any_fail -eq 0 ]; then
+    add_finding "per-mc-subproject-coverage" "hard_fail" "pass" "" "" \
+      "every MC line has all expected subprojects (common + every opted-in loader)" ""
+  fi
+}
+
+# ----------------------------------------------------------------------------
+# Check 19: per-mc-java-toolchain-keyed
+#
+# gradle.properties must contain `java_version_<mc_suffix>` for each MC in the
+# matrix, AND that value must match the MC->Java rule (1.21.x->21, 26.x->25).
+# ----------------------------------------------------------------------------
+
+check_per_mc_java_toolchain_keyed() {
+  if [ "$MULTI_MC" != "1" ]; then
+    add_finding "per-mc-java-toolchain-keyed" "hard_fail" "skip" "" "" \
+      "skipped: multi-MC-only check (layout=$LAYOUT)" ""
+    return 0
+  fi
+  if [ ! -f gradle.properties ]; then
+    add_finding "per-mc-java-toolchain-keyed" "hard_fail" "skip" "" "" \
+      "skipped: gradle.properties not found" ""
+    return 0
+  fi
+  local any_fail=0
+  local checked=0
+  local mcs
+  mcs=$(unique_mcs)
+  while IFS= read -r mc; do
+    [ -z "$mc" ] && continue
+    local suffix; suffix=$(mc_suffix "$mc")
+    local key="java_version_$suffix"
+    local actual
+    actual=$(read_gradle_prop "gradle.properties" "$key")
+    local expected
+    expected=$(expected_java_for_mc "$mc")
+    if [ -z "$expected" ]; then
+      add_finding "per-mc-java-toolchain-keyed" "hard_fail" "skip" "" "" \
+        "skipped for MC $mc: no Java-toolchain convention known for this MC" ""
+      continue
+    fi
+    checked=1
+    if [ -z "$actual" ]; then
+      add_finding "per-mc-java-toolchain-keyed" "hard_fail" "fail" \
+        "gradle.properties" "" \
+        "missing $key in gradle.properties; expected $key=$expected for MC $mc" \
+        "Add '$key=$expected' to gradle.properties so versions/$mc/* subprojects can resolve their toolchain"
+      any_fail=1
+    elif [ "$actual" != "$expected" ]; then
+      add_finding "per-mc-java-toolchain-keyed" "hard_fail" "fail" \
+        "gradle.properties" "" \
+        "$key=$actual but MC $mc requires Java $expected" \
+        "Change $key to $expected in gradle.properties (1.21.x requires Java 21; 26.x requires Java 25)"
+      any_fail=1
+    fi
+  done <<< "$mcs"
+  if [ $checked -eq 1 ] && [ $any_fail -eq 0 ]; then
+    add_finding "per-mc-java-toolchain-keyed" "hard_fail" "pass" "" "" \
+      "every MC line has a java_version_<suffix>= pin matching the MC->Java rule" ""
+  elif [ $checked -eq 0 ]; then
+    add_finding "per-mc-java-toolchain-keyed" "hard_fail" "skip" "" "" \
+      "skipped: no MC versions detected" ""
+  fi
+}
+
+# ----------------------------------------------------------------------------
+# Check 20: top-common-no-loader-deps
+#
+# Top-level common/build.gradle must not declare any net.fabricmc:*,
+# net.neoforged:*, OR MC artifact dependencies (com.mojang:minecraft,
+# net.neoforged:neoform, etc.). It is pure-Java only.
+# ----------------------------------------------------------------------------
+
+check_top_common_no_loader_deps() {
+  if [ "$MULTI_MC" != "1" ]; then
+    add_finding "top-common-no-loader-deps" "hard_fail" "skip" "" "" \
+      "skipped: multi-MC-only check (layout=$LAYOUT)" ""
+    return 0
+  fi
+  local cdir
+  cdir=$(subproject_dir "$COMMON_SUBPROJECT")
+  if [ -z "$cdir" ]; then
+    add_finding "top-common-no-loader-deps" "hard_fail" "skip" "" "" \
+      "skipped: multi-MC layout but no top-level :common subproject" ""
+    return 0
+  fi
+  local f
+  f=$(subproject_build_file "$cdir")
+  if [ -z "$f" ]; then
+    add_finding "top-common-no-loader-deps" "hard_fail" "skip" "" "" \
+      "skipped: no $cdir/build.gradle(.kts) found" ""
+    return 0
+  fi
+  local any_fail=0
+  while IFS=: read -r lineno line; do
+    [ -z "$lineno" ] && continue
+    local msg
+    msg=$(printf '%s' "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    add_finding "top-common-no-loader-deps" "hard_fail" "fail" \
+      "$f" "$lineno" \
+      "top-level :common declares a loader/MC dep: $msg — :common must be pure Java" \
+      "Move this dependency to versions/<mc>/common/build.gradle (MC types are MC-version-specific) or to a loader subproject; :common compiles only against Java + 3rd-party pure-Java libs"
+    any_fail=1
+  done < <(strip_gradle_comments "$f" | \
+    grep -nE '(net\.fabricmc(:|\.fabric-api)|net\.neoforged(:|\.fancymodloader|\.neoforge|\.moddev|\.gradle)|com\.mojang:minecraft|fabric-loader|neoform|userdev|fabric-loom|loom\.officialMojangMappings|mappings[[:space:]]*loom)' \
+    2>/dev/null || true)
+
+  if [ $any_fail -eq 0 ]; then
+    add_finding "top-common-no-loader-deps" "hard_fail" "pass" "" "" \
+      "top-level :common build.gradle has no loader/MC dependencies (pure Java)" ""
+  fi
+}
+
+# ----------------------------------------------------------------------------
+# Check 21: per-mc-modid-consistency
+#
+# All versions/<mc>/<loader>/ manifests across all MC × loader pairs must
+# share the same modid. (Note: this overlaps with modid-consistent-across-loaders
+# in multi-MC mode, but is kept separate as it scales to many MC lines and
+# emits per-pair findings; the older check just summarizes.)
+# ----------------------------------------------------------------------------
+
+check_per_mc_modid_consistency() {
+  if [ "$MULTI_MC" != "1" ]; then
+    add_finding "per-mc-modid-consistency" "hard_fail" "skip" "" "" \
+      "skipped: multi-MC-only check (layout=$LAYOUT)" ""
+    return 0
+  fi
+  # Collect every (mc, loader, manifest, modid) tuple.
+  local first_id=""
+  local first_src=""
+  local any_fail=0
+  local checked=0
+  local i=0
+  local n=${#T_LOADER[@]}
+  while [ $i -lt $n ]; do
+    local loader="${T_LOADER[$i]}"
+    local subdir
+    subdir=$(subproject_dir "${T_SUBPROJECT[$i]}")
+    local mc="${T_MC[$i]}"
+    i=$((i + 1))
+    [ -z "$subdir" ] && continue
+    local manifest=""
+    local mid=""
+    if [ "$loader" = "fabric" ] && [ -f "$subdir/src/main/resources/fabric.mod.json" ]; then
+      manifest="$subdir/src/main/resources/fabric.mod.json"
+      mid=$(read_json_string_field "$manifest" "id")
+    elif [ "$loader" = "neoforge" ] || [ "$loader" = "forge" ]; then
+      if [ -f "$subdir/src/main/resources/META-INF/neoforge.mods.toml" ]; then
+        manifest="$subdir/src/main/resources/META-INF/neoforge.mods.toml"
+      elif [ -f "$subdir/src/main/resources/META-INF/mods.toml" ]; then
+        manifest="$subdir/src/main/resources/META-INF/mods.toml"
+      fi
+      if [ -n "$manifest" ]; then
+        mid=$(read_toml_modid "$manifest")
+      fi
+    fi
+    [ -z "$manifest" ] && continue
+    # Treat ${mod_id}-style placeholders as "matches" — they're expanded later.
+    if printf '%s' "$mid" | grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}'; then
+      continue
+    fi
+    [ -z "$mid" ] && continue
+    checked=1
+    if [ -z "$first_id" ]; then
+      first_id="$mid"
+      first_src="$manifest"
+    elif [ "$first_id" != "$mid" ]; then
+      add_finding "per-mc-modid-consistency" "hard_fail" "fail" \
+        "$manifest" "" \
+        "modid mismatch in (MC $mc, $loader): manifest modId=$mid but ($first_src) had $first_id" \
+        "Every per-MC, per-loader manifest must share a single modid. Pick one (likely the gradle.properties value) and update every manifest."
+      any_fail=1
+    fi
+  done
+  if [ $checked -eq 0 ]; then
+    add_finding "per-mc-modid-consistency" "hard_fail" "skip" "" "" \
+      "skipped: no per-MC manifests found with literal modids (all use \${mod_id} placeholders)" ""
+    return 0
+  fi
+  if [ $any_fail -eq 0 ]; then
+    add_finding "per-mc-modid-consistency" "hard_fail" "pass" "" "" \
+      "every (MC, loader) manifest shares the same modid ($first_id)" ""
+  fi
+}
+
 # ----------------------------------------------------------------------------
 # Run all checks.
 # ----------------------------------------------------------------------------
@@ -1909,6 +2264,13 @@ check_forge_deps_via_modimpl
 check_at_aw_parity
 check_event_bus_heuristic
 check_single_loader_upgrade
+
+# Multi-MC specific checks.
+check_top_common_pure_java
+check_per_mc_subproject_coverage
+check_per_mc_java_toolchain_keyed
+check_top_common_no_loader_deps
+check_per_mc_modid_consistency
 
 # ----------------------------------------------------------------------------
 # Emit JSON.
