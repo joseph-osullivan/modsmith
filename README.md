@@ -106,7 +106,7 @@ modsmith/
 
 - **Single MC version per scaffold.** The resolver accepts multiple MC tokens but `init` renders one `gradle.properties`. Multi-MC source forks are deferred to v0.2.0.
 - **Gradle wrapper.** `init` bootstraps the wrapper via `gradle wrapper --gradle-version 9.2` if `gradle` is on `PATH`; otherwise warns and lets the user bootstrap manually. A shipped wrapper stub is a v0.2.0 follow-up.
-- **No proving-ground migration yet.** v0.1.0 ships the plugin; the first real-world migration (of `lord-of-lands` from NeoForge-only to multi-loader) follows.
+- **No end-to-end migration validation yet.** v0.1.0 ships the plugin; full validation against a real-world multi-loader migration is pending.
 - **No `/modsmith:publish` skill.** Modrinth + CurseForge per-loader uploads are v0.2.0.
 
 ## License

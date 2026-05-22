@@ -425,7 +425,7 @@ After authoring a batch:
 ./gradlew runGameTestServer                        # full validation
 ```
 
-Read the log carefully for any `lordoflands:<id> failed at … <reason>`
+Read the log carefully for any `<modid>:<id> failed at … <reason>`
 lines. If a test fails: identify the root cause, decide whether to
 (a) fix the test, (b) drop it if it's testing a flaky surface, or
 (c) flag back to the orchestrator if the production code is buggy.

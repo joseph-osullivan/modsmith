@@ -86,8 +86,8 @@ post-merge:
   after all parallel builders merge. If you bump it, parallel
   builders can land conflicting versions, and the bump becomes part
   of *one* feature's diff instead of the bundle's.
-- **`src/main/java/com/lordoflands/gametest/ModGameTests.java`** (or
-  the host project's equivalent shared test-registration aggregator) —
+- **The shared test-registration aggregator** (e.g.
+  `src/main/java/<package>/gametest/ModGameTests.java`) —
   multiple parallel subtasks adding entries to one file produces
   textual conflicts. The architect deliberately reserves this file
   for the orchestrator's post-merge step. Add your test class +

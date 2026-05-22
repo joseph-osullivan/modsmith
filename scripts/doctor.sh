@@ -1195,9 +1195,8 @@ check_modid_consistent() {
         if [ -n "$nf" ]; then
           local nid
           nid=$(read_toml_modid "$nf")
-          # Note: lord-of-lands' neoforge.mods.toml is templated with
-          # ${mod_id} (resolved by NeoForge at runtime). We accept that
-          # as a non-failure here.
+          # NeoForge mods.toml may be templated with ${mod_id} (resolved
+          # at runtime). Accept that as a non-failure here.
           if [ -n "$nid" ] && [ "$nid" != "$rootid" ] \
              && ! printf '%s' "$nid" | grep -qE '\$\{[A-Za-z_][A-Za-z0-9_]*\}'; then
             add_finding "modid-consistent-across-loaders" "hard_fail" "fail" \

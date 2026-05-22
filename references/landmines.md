@@ -195,8 +195,7 @@ Fabric + NeoForge.
   ticks) or `/time add 1d`-style syntax if you want a day-grained jump. Day-tick
   handlers that gate on `getOverworldClockTime() % 24000 == 0` will silently
   miss any time-jump that overshoots the boundary — trigger on day-index
-  *change* (`current/24000 != last/24000`) instead. Discovered in
-  animal-weights run-001 manual playtest.
+  *change* (`current/24000 != last/24000`) instead.
 
 - **`@EventBusSubscriber(value = Dist.DEDICATED_SERVER)` silently breaks
   single-player.** In SP the integrated server runs inside the client
@@ -204,8 +203,7 @@ Fabric + NeoForge.
   `runGameTestServer` is a real dedicated server so tests pass while the
   mod is inert in `runClient`. Don't use a `Dist` value on server-side
   handlers — register on all dists and gate work with runtime
-  `isClientSide()` / `instanceof ServerLevel` checks. Discovered in
-  animal-weights run-001 manual playtest.
+  `isClientSide()` / `instanceof ServerLevel` checks.
 
 - **`MushroomCow` is NOT a subclass of `Cow` in 26.1.** Both extend the new
   `net.minecraft.world.entity.animal.cow.AbstractCow`. Pre-26.1 the Mooshroom
@@ -214,47 +212,42 @@ Fabric + NeoForge.
   `instanceof AbstractCow`. `MushroomCow` itself lives at
   `net.minecraft.world.entity.animal.cow.MushroomCow`. `Rabbit` lives at
   `net.minecraft.world.entity.animal.rabbit.Rabbit` (same 26.1 subpackage
-  reshuffle). Discovered in animal-weights run-003.
+  reshuffle).
 
 - **`Level#getDayTime()` is gone.** Replaced by `Level#getOverworldClockTime()`
   (returns the canonical overworld clock in ticks regardless of dimension)
   and `Level#getDefaultClockTime()`. Backed by the new
   `net.minecraft.world.clock.ClockManager` / `WorldClock` subsystem in
   MC 26.1.2. Use `getOverworldClockTime() % 24000L == 0L` for dawn boundary
-  detection. Discovered in animal-weights run-001 task-2.
+  detection.
 
 - **`Cow`, `Pig`, `Sheep`, `Chicken` moved into species subpackages.**
   `net.minecraft.world.entity.animal.{Cow,Pig,Sheep,Chicken}` →
   `animal.cow.Cow`, `animal.pig.Pig`, `animal.sheep.Sheep`,
   `animal.chicken.Chicken`. `Animal` base class stays at
   `world.entity.animal.Animal`. Same 26.1 reshuffle that moved
-  `Zombie → monster.zombie.Zombie`. Discovered in animal-weights run-001
-  task-2.
+  `Zombie → monster.zombie.Zombie`.
 
 - **`Entity#moveTo(...)` → `Entity#snapTo(...)`** (all overloads). Also gained
   `absSnapTo(...)` for absolute positioning. The earlier "decompiled-with-NeoForge"
   cache jar still shows `moveTo` (it's pre-mapping), but the actual compileClasspath
-  uses the client/server jar where it's `snapTo`. Discovered in animal-weights
-  run-002 (cost: 210k tokens to gametest-author).
+  uses the client/server jar where it's `snapTo`.
 
 - **`MobEffects` vocabulary rename in MC 26.1.** `MOVEMENT_SLOWDOWN → SLOWNESS`,
   `MOVEMENT_SPEED → SPEED`, `DIG_SLOWDOWN → MINING_FATIGUE`, `JUMP → JUMP_BOOST`,
   `CONFUSION → NAUSEA`, `DAMAGE_BOOST → STRENGTH`, `DAMAGE_RESISTANCE → RESISTANCE`.
-  Discovered in animal-weights run-001 task-4.
 
 - **`@GameTestHolder` / `@PrefixGameTestTemplate` annotation-based GameTest
   discovery is gone from the main compileClasspath.** The annotations exist
   in the userdev jar but are not exported to consuming mods. Use the
   `DeferredRegister<TestFunction>` + `data/<modid>/test_instance/<name>.json`
-  pattern instead (see lord-of-lands `ModGameTests.java` for a reference).
-  Discovered in animal-weights run-001 (cost: 122k tokens before resolution).
+  pattern instead.
 
 - **`ServerLevel#getSharedSpawnPos()` → `getLevelData().getRespawnData().pos()`.**
-  `RespawnData` is a new top-level record bundling pos + angle + dim. Discovered
-  in run-024 task-4 (cost: 121 tool calls / 150k tokens before resolution).
+  `RespawnData` is a new top-level record bundling pos + angle + dim.
 
 - **`BlockEvent.BreakEvent` → `BreakBlockEvent`.** Top-level event, not nested
-  under BlockEvent anymore. Discovered in run-026 (PR #82).
+  under BlockEvent anymore.
 
 - **`Tier`, `ArmorItem`, `SwordItem`, `TieredItem` deleted.** Use the project's
   `TierHelper` registry-key map. Modded gear that isn't in the map is ignored
@@ -288,9 +281,7 @@ Fabric + NeoForge.
   species renderer and override `getModelTint`, re-registered via
   `EntityRenderersEvent.RegisterRenderers`, or (b) mixin into
   `LivingEntityRenderer#getModelTint` with `@Inject(at = HEAD,
-  cancellable = true)` and `cir.setReturnValue(tint)`. Discovered in
-  animal-weights run-005 task-4 (first attempt burned 134k tokens
-  before recognising the architectural blocker).
+  cancellable = true)` and `cir.setReturnValue(tint)`.
 
 - **`RegisterRenderStateModifiersEvent`** (NeoForge mod-bus) is the
   entry point for stashing per-entity data on the render state. Use
@@ -302,15 +293,13 @@ Fabric + NeoForge.
   LivingEntityRenderState, ?>>` to pin wildcards. **Note**: this only
   stashes data — it does NOT apply a tint. See the
   `RenderLivingEvent.Pre` entry above for the tint primitive.
-  Discovered in animal-weights run-005 task-4.
 
 - **NeoForge 26.1 ships Mixin natively — no `build.gradle` plugin block
   required.** Drop a mixins JSON into `src/main/resources/`, reference
   it from `META-INF/neoforge.mods.toml` with `[[mixins]] config =
   "yourmod.mixins.json"`, and the ModDevGradle 2 build picks it up. No
   `apply plugin: 'org.spongepowered.mixin'`, no `mixin { config ... }`
-  block, no Loom-style configuration. Discovered in animal-weights
-  run-005 task-4 attempt-2. The mixin compatibility level
+  block, no Loom-style configuration. The mixin compatibility level
   (`JAVA_25` etc.) is a string constant on
   `MixinEnvironment.CompatibilityLevel` — confirm a value is valid by
   `javap`-ing the bundled `sponge-mixin-*.jar` in the NeoForge cache if
@@ -318,16 +307,13 @@ Fabric + NeoForge.
 
 - **`Entity#getTags()` → `Entity#entityTags()`.** Returns the same
   `Set<String>`. `addTag(String)` / `removeTag(String)` /
-  `hasTag(String)` are unchanged. Discovered in animal-weights run-005
-  task-5 (researcher initially missed this rename and claimed
-  `getTags()` was still public; builder corrected on its own).
+  `hasTag(String)` are unchanged.
 
 - **`Component.Serializer` (the inner class on `Component`) is gone.**
   Replaced by `net.minecraft.network.chat.ComponentSerialization`. To
   encode a `Component` to NBT or JSON in 26.1, use
   `ComponentSerialization.CODEC.encodeStart(NbtOps.INSTANCE,
-  component).getOrThrow(...)` → `Tag`. Discovered in animal-weights
-  run-005 task-5.
+  component).getOrThrow(...)` → `Tag`.
 
 - **`Entity#load(CompoundTag)` → `Entity#load(ValueInput)`.** The
   `ValueInput` / `ValueOutput` interfaces (in
@@ -335,7 +321,7 @@ Fabric + NeoForge.
   To call `load` from mod code with a hand-built `CompoundTag`, wrap
   via `TagValueInput.create(ProblemReporter.DISCARDING,
   entity.registryAccess(), tag)`. `Entity#saveAdditional` likewise
-  takes `ValueOutput`. Discovered in animal-weights run-005 task-5.
+  takes `ValueOutput`.
 
 - **`EntityType#create(Level)` → `EntityType#create(Level,
   EntitySpawnReason)`.** All four create overloads in 26.1 require an
@@ -343,7 +329,6 @@ Fabric + NeoForge.
   `COMMAND`, `MOB_SUMMONED`). Was `MobSpawnType` pre-26.1. For
   mod-spawned utility entities (Display, etc.), `EntitySpawnReason.LOAD`
   is the most neutral choice — bypasses spawn-event side-effects.
-  Discovered in animal-weights run-005 task-5.
 
 - **`Display.TextDisplay#setText(Component)` is private in MC 26.1** —
   the field-setter you'd expect doesn't exist publicly. The canonical
@@ -352,20 +337,15 @@ Fabric + NeoForge.
   Component (via `ComponentSerialization.CODEC`), wrap as `ValueInput`,
   call `display.load(valueInput)`. Vanilla's `readAdditionalSaveData`
   then routes the resolved text into the data-watcher slot.
-  Discovered in animal-weights run-005 task-5.
 
 - **`LandRandomPos.getPos(PathfinderMob, int, int)` returns
   `@Nullable Vec3`.** Standard random-pos sampling for ground animals;
   filters water destinations via `GoalUtils.isWater`. Use over
-  `DefaultRandomPos` when the mob must land on solid ground.
-  Confirmed in animal-weights run-005 task-6.
-
----
+  `DefaultRandomPos` when the mob must land on solid ground.---
 
 ## Minecraft 1.21.1 (NeoForge 21.1.x LTS)
 
-This section seeded from the modsmith proving-ground (lord-of-lands) and
-the version-matrix; populate as new burns are discovered.
+Populate as new burns are discovered.
 
 - **`Tier.getLevel()` does NOT exist in 1.21.1.** Compare a `Tier` by
   identity against the `Tiers` enum constants
@@ -379,7 +359,7 @@ the version-matrix; populate as new burns are discovered.
 When a builder or researcher resolves an API change:
 
 1. One bullet at the top of the relevant section, in the format
-   `**Old.symbol → New.symbol.** One-line note. Discovered in run-NNN.`
+   `**Old.symbol → New.symbol.** One-line note.`
 2. If the change is large (a whole subsystem refactor), link to a longer
    write-up in the relevant `docs/workflow-runs/NNN-slug/research.md` rather
    than inlining the explanation.

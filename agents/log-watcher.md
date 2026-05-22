@@ -161,14 +161,14 @@ summary the player sees.
   "findings": [
     {
       "severity": "hard_fail",
-      "pattern": "ERROR.*lordoflands",
+      "pattern": "ERROR.*mymod",
       "source": "feature-spec",
       "hit_count": 3,
       "first_seen_ts": "2026-05-21T14:32:01.123",
       "context_lines": [
         "[14:32:00] [Server thread/INFO] something",
-        "[14:32:01] [Server thread/ERROR] lordoflands: NPE in tick",
-        "[14:32:01] [Server thread/ERROR]   at com.lordoflands..."
+        "[14:32:01] [Server thread/ERROR] mymod: NPE in tick",
+        "[14:32:01] [Server thread/ERROR]   at com.example.mymod..."
       ],
       "note": "Same root cause as the hard_fail at 14:33:12; both throw from ShopkeeperTickHandler.tick."
     }

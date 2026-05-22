@@ -303,7 +303,7 @@ For the canonical feature used in the modsmith plan, the architect produces:
   ],
   "should_not_see": [
     {
-      "pattern": "ERROR.*lordoflands",
+      "pattern": "ERROR.*mymod",
       "severity": "hard_fail",
       "note": "Catches any mod-namespaced ERROR — feature-spec layer of universal stack-trace rule."
     },

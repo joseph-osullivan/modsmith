@@ -428,7 +428,7 @@ elif [ -n "$ROOT_BUILD" ] && file_has_fabric_loom "$ROOT_BUILD"; then
   lver=$(resolve_fabric_loader_version "")
   add_target "fabric" "$mc" "$lver" ":" ""
 
-# Step 3: single-loader NeoForge at root (this is lord-of-lands today).
+# Step 3: single-loader NeoForge at root.
 elif [ -n "$ROOT_BUILD" ] && file_has_neoforge_moddev "$ROOT_BUILD"; then
   LAYOUT="single-loader"
   mc=$(read_gradle_prop "gradle.properties" "minecraft_version")

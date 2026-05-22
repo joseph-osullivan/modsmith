@@ -211,7 +211,7 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 
 ## `targets_matrix` examples
 
-A single-loader NeoForge repo (e.g. unmigrated lord-of-lands) emits:
+A single-loader NeoForge repo emits:
 
 ```json
 "targets_matrix": {
