@@ -96,6 +96,7 @@ modsmith/
 - **Versions:** Single source of truth in root `gradle.properties`. Subproject `build.gradle` files read via `findProperty`. Hardcoded versions in subprojects are a `doctor` hard-fail.
 - **Tests:** Three tiers — Tier-1 JUnit (alongside code, in `common/`), Tier-2 GameTest (per loader, runs in background during dev-server handoff), Tier-3 scenarios (optional, multi-tick scripts).
 - **Loaders:** Fabric and NeoForge (modern). Forge legacy is explicitly out of scope.
+- **Gradle wrapper:** scaffolds ship with a pinned Gradle 9.2 wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/`). No system `gradle` install required — `./gradlew build` works directly after `/modsmith:init`.
 
 ## Inspired by
 
@@ -104,10 +105,8 @@ modsmith/
 
 ## Known limitations
 
-- **Gradle wrapper.** `init` bootstraps the wrapper via `gradle wrapper --gradle-version 9.2` if `gradle` is on `PATH`; otherwise warns and lets the user bootstrap manually. A shipped wrapper stub is a future follow-up.
 - **No end-to-end migration validation yet.** The plugin is authored end-to-end; full validation against a real-world multi-loader migration is pending.
 - **No `/modsmith:publish` skill.** Modrinth + CurseForge per-loader uploads are v0.2.0.
-- **NeoForm version placeholders.** When the resolver can't determine the exact `neoFormVersion` for a given MC, `init` writes a `<mc>-1` placeholder that the user must replace before the first `:versions:<mc>:common:build`. A future resolver enhancement will query NeoForm metadata directly.
 
 ## License
 

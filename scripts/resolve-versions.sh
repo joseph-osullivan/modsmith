@@ -19,6 +19,7 @@
 #                         "fabric_api_version": "0.145.4+26.1.2" },
 #           "neoforge": { "loader_version": "26.1.2.64-beta" }
 #         },
+#         "neoform_version": "26.1.2-1",
 #         "parchment": { "mc": "1.21.1", "version": "2024.11.17" },
 #         "notes": ["..."]
 #       }
@@ -40,6 +41,7 @@
 FABRIC_META_GAME="https://meta.fabricmc.net/v2/versions/game"
 FABRIC_META_LOADER="https://meta.fabricmc.net/v2/versions/loader"
 NEOFORGE_MAVEN_METADATA="https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml"
+NEOFORM_MAVEN_METADATA="https://maven.neoforged.net/releases/net/neoforged/neoform/maven-metadata.xml"
 PARCHMENT_MAVEN_METADATA_TPL="https://maven.parchmentmc.org/org/parchmentmc/data/parchment-%s/maven-metadata.xml"
 MODRINTH_FABRIC_API_TPL='https://api.modrinth.com/v2/project/fabric-api/version?game_versions=%%5B%%22%s%%22%%5D'
 
@@ -140,6 +142,7 @@ TOKEN_JAVA=()         # 21 / 25
 TOKEN_FAB_LOADER=()   # fabric loader version (or "")
 TOKEN_FAB_API=()      # fabric-api version (or "")
 TOKEN_NEO_LOADER=()   # neoforge loader version (or "")
+TOKEN_NEOFORM_VER=()  # NeoForm version (or "")
 TOKEN_PARCH_MC=()     # parchment minecraftVersion (or "")
 TOKEN_PARCH_VER=()    # parchment mappingsVersion (or "")
 TOKEN_NOTES_JSON=()   # JSON array literal of per-token notes
@@ -167,6 +170,14 @@ if [ $want_neoforge -eq 1 ]; then
   if ! NEO_META_XML=$(fetch_cached "$NEOFORGE_MAVEN_METADATA"); then
     WARNINGS+=("could not fetch NeoForge maven-metadata.xml; neoforge versions will be null")
   fi
+fi
+
+# NeoForm metadata — used to resolve NeoForm bytecode revisions for the
+# per-MC :versions:<mc>:common subproject in multi-MC scaffolds. Fetched
+# unconditionally because NeoForm is loader-agnostic.
+NEOFORM_META_XML=""
+if ! NEOFORM_META_XML=$(fetch_cached "$NEOFORM_MAVEN_METADATA"); then
+  WARNINGS+=("could not fetch NeoForm maven-metadata.xml; neoform versions will be null")
 fi
 
 # Derive Java toolchain from MC version.
@@ -286,6 +297,23 @@ resolve_neoforge() {
     | tail -1
 }
 
+# Resolve the newest NeoForm bytecode revision for a given MC version.
+# NeoForm versions are formatted as "<mc-version>-<suffix>" where <suffix>
+# is either a yyyymmdd.hhmmss timestamp (older lines) or a small integer
+# (newer lines, e.g. 26.1.2-1). Maven metadata lists versions in release
+# order, so the last entry matching "<mc>-" is the latest stable revision.
+resolve_neoform_version() {
+  local mc="$1"
+  [ -n "$NEOFORM_META_XML" ] || return 1
+
+  local prefix="${mc}-"
+  printf '%s' "$NEOFORM_META_XML" \
+    | grep -oE '<version>[^<]+</version>' \
+    | sed -E 's|</?version>||g' \
+    | grep "^${prefix//./\\.}" \
+    | tail -1
+}
+
 # Resolve Parchment mapping for an MC version. Echoes "<mc>|<mappingsVersion>"
 # or empty if unresolved. Parchment publishes per-MC artifacts, so if there is
 # no artifact for the given MC, we attempt the closest LTS line.
@@ -332,6 +360,7 @@ for tok in "${mc_arr[@]}"; do
     TOKEN_FAB_LOADER+=("")
     TOKEN_FAB_API+=("")
     TOKEN_NEO_LOADER+=("")
+    TOKEN_NEOFORM_VER+=("")
     TOKEN_PARCH_MC+=("")
     TOKEN_PARCH_VER+=("")
     TOKEN_NOTES_JSON+=('["unresolved"]')
@@ -346,6 +375,7 @@ for tok in "${mc_arr[@]}"; do
     TOKEN_FAB_LOADER+=("")
     TOKEN_FAB_API+=("")
     TOKEN_NEO_LOADER+=("")
+    TOKEN_NEOFORM_VER+=("")
     TOKEN_PARCH_MC+=("")
     TOKEN_PARCH_VER+=("")
     TOKEN_NOTES_JSON+=('["unresolved"]')
@@ -389,6 +419,18 @@ for tok in "${mc_arr[@]}"; do
     fi
   fi
 
+  # NeoForm bytecode revision for the per-MC :versions:<mc>:common
+  # subproject. Resolved unconditionally — even Fabric-only multi-MC
+  # scaffolds use NeoForm to compile vanilla MC classes.
+  neoform_ver=""
+  if v=$(resolve_neoform_version "$mc"); then
+    neoform_ver="$v"
+  fi
+  if [ -z "$neoform_ver" ]; then
+    WARNINGS+=("could not resolve NeoForm version for MC $mc; multi-MC scaffolds will fall back to a '<mc>-1' placeholder")
+    notes+=("no NeoForm artifact found for MC $mc on maven.neoforged.net; the multi-MC translator will write a placeholder you must replace before the :versions:$mc:common build will succeed")
+  fi
+
   parch_mc=""
   parch_ver=""
   if pair=$(resolve_parchment "$mc"); then
@@ -414,6 +456,7 @@ for tok in "${mc_arr[@]}"; do
   TOKEN_FAB_LOADER+=("$fab_loader")
   TOKEN_FAB_API+=("$fab_api")
   TOKEN_NEO_LOADER+=("$neo_loader")
+  TOKEN_NEOFORM_VER+=("$neoform_ver")
   TOKEN_PARCH_MC+=("$parch_mc")
   TOKEN_PARCH_VER+=("$parch_ver")
   TOKEN_NOTES_JSON+=("$notes_json")
@@ -473,11 +516,20 @@ build_resolved_array() {
         "$(json_str "${TOKEN_PARCH_VER[$i]}")")
     fi
 
-    printf '{"input_mc_token":%s,"mc_version":%s,"java_toolchain":%s,"loaders":%s,"parchment":%s,"notes":%s}' \
+    # NeoForm version (loader-agnostic, used by per-MC :common subproject).
+    local nf_json
+    if [ -z "${TOKEN_NEOFORM_VER[$i]}" ]; then
+      nf_json=null
+    else
+      nf_json=$(json_str "${TOKEN_NEOFORM_VER[$i]}")
+    fi
+
+    printf '{"input_mc_token":%s,"mc_version":%s,"java_toolchain":%s,"loaders":%s,"neoform_version":%s,"parchment":%s,"notes":%s}' \
       "$(json_str "${TOKEN_INPUT[$i]}")" \
       "$mc_json" \
       "$java_json" \
       "$loaders_obj" \
+      "$nf_json" \
       "$parch_obj" \
       "${TOKEN_NOTES_JSON[$i]}"
 

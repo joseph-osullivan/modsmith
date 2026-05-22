@@ -1,0 +1,121 @@
+// :versions:26.1.2:neoforge — NeoForge ModDevGradle (MDG) for MC 26.1.2.
+//
+// Mixin refmap: DISABLED — NeoForge handles its own mapping.
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev'
+}
+
+def modid          = project.findProperty('modid')
+def mcVersion      = project.findProperty('mc_version_26_1_2')
+def neoForgeVer    = project.findProperty('neoforge_version_26_1_2')
+def parchmentMc    = project.findProperty('parchment_mc_version_26_1_2')
+def parchmentVer   = project.findProperty('parchment_version_26_1_2')
+def javaVersion    = (project.findProperty('java_version_26_1_2') as String).toInteger()
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(javaVersion)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release.set(javaVersion)
+}
+
+base {
+    archivesName = "${modid}-neoforge-${mcVersion}"
+}
+
+configurations {
+    mcCommonJava      { canBeResolved = true }
+    mcCommonResources { canBeResolved = true }
+}
+
+dependencies {
+    // Pure-Java :common (MC-agnostic shared code).
+    implementation project(':common')
+
+    // Per-MC :versions:26.1.2:common — pull raw sources.
+    mcCommonJava      project(path: ":versions:26.1.2:common", configuration: 'commonJava')
+    mcCommonResources project(path: ":versions:26.1.2:common", configuration: 'commonResources')
+
+    compileOnly         group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.5.3'
+    annotationProcessor group: 'io.github.llamalad7', name: 'mixinextras-common', version: '0.5.3'
+}
+
+tasks.named('compileJava', JavaCompile) {
+    dependsOn(configurations.mcCommonJava)
+    source(configurations.mcCommonJava)
+}
+
+tasks.named('sourcesJar', Jar) {
+    dependsOn(configurations.mcCommonJava)
+    from(configurations.mcCommonJava)
+    dependsOn(configurations.mcCommonResources)
+    from(configurations.mcCommonResources)
+}
+
+neoForge {
+    version = neoForgeVer
+
+    if (parchmentMc != null && parchmentVer != null) {
+        parchment {
+            minecraftVersion = parchmentMc
+            mappingsVersion  = parchmentVer
+        }
+    }
+
+    def at = project(":versions:26.1.2:common").file('src/main/resources/META-INF/accesstransformer.cfg')
+    if (at.exists()) {
+        accessTransformers.from(at.absolutePath)
+    }
+
+    runs {
+        configureEach {
+            systemProperty('neoforge.enabledGameTestNamespaces', modid)
+            ideName = "NeoForge ${it.name.capitalize()} (${mcVersion}, ${project.path})"
+            logLevel = org.slf4j.event.Level.INFO
+        }
+        client {
+            client()
+            gameDirectory = this.mkdir(this.file('runs/client'))
+        }
+        server {
+            server()
+            this.file('runs/server').mkdirs()
+            gameDirectory = this.mkdir(this.file('runs/server'))
+        }
+        data {
+            clientData()
+            gameDirectory = this.mkdir(this.file('runs/data'))
+            programArguments.addAll(
+                '--mod',      modid,
+                '--all',
+                '--output',   file('src/generated/resources/').absolutePath,
+                '--existing', file('src/main/resources/').absolutePath
+            )
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+            gameDirectory = this.mkdir(this.file('runs/gametest'))
+        }
+    }
+
+    mods {
+        "${modid}" {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+processResources {
+    dependsOn(configurations.mcCommonResources)
+    from(configurations.mcCommonResources)
+
+    // Note: neoforge.mods.toml is fully concretized at scaffold time.
+    // The literal ${file.jarVersion} is resolved by NeoForge FML at mod-load time.
+}

@@ -1,0 +1,32 @@
+modLoader     = "javafml"
+loaderVersion = "[1,)"
+license       = "MIT"
+issueTrackerURL = ""
+
+[[mods]]
+modId       = "examplemod"
+# `${file.jarVersion}` is resolved at mod-load time by NeoForge FML from the
+# jar manifest — leaving it literal here is intentional and required.
+version     = "${file.jarVersion}"
+displayName = "Example Mod"
+description = '''A minimal multi-MC modsmith scaffold for documentation and smoke-testing.'''
+authors     = "modsmith"
+logoFile    = "icon.png"
+credits     = ""
+
+[[mixins]]
+config = "examplemod.mixins.json"
+
+[[dependencies.examplemod]]
+modId        = "neoforge"
+type         = "required"
+versionRange = "[26.1.2.64-beta,)"
+ordering     = "NONE"
+side         = "BOTH"
+
+[[dependencies.examplemod]]
+modId        = "minecraft"
+type         = "required"
+versionRange = "[26.1.2,)"
+ordering     = "NONE"
+side         = "BOTH"

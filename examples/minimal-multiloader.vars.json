@@ -1,0 +1,43 @@
+{
+  "_comment": "Vars used to render examples/minimal-multiloader/. Edit + re-render to update the example.",
+  "modid": "examplemod",
+  "mod_name": "Example Mod",
+  "mod_version": "0.1.0",
+  "package_base": "com.example.examplemod",
+  "package_base_path": "com/example/examplemod",
+  "description": "A minimal multi-MC modsmith scaffold for documentation and smoke-testing.",
+  "license": "MIT",
+  "authors": "modsmith",
+  "java_version_shared": 25,
+  "loaders": ["fabric", "neoforge"],
+  "mc_versions": [
+    {
+      "mc_version": "1.21.1",
+      "mc_suffix": "1_21_1",
+      "java_version": 21,
+      "neoforge_version": "21.1.230",
+      "neoform_version": "1.21.1-20240808.144430",
+      "fabric_loader_version": "0.19.2",
+      "fabric_api_version": "0.116.12+1.21.1",
+      "parchment_mc_version": "1.21.1",
+      "parchment_version": "2024.11.17",
+      "has_fabric": true,
+      "has_neoforge": true,
+      "has_parchment": true
+    },
+    {
+      "mc_version": "26.1.2",
+      "mc_suffix": "26_1_2",
+      "java_version": 25,
+      "neoforge_version": "26.1.2.64-beta",
+      "neoform_version": "26.1.2-1",
+      "fabric_loader_version": "0.19.2",
+      "fabric_api_version": "0.149.1+26.1.2",
+      "parchment_mc_version": "1.21.1",
+      "parchment_version": "2024.11.17",
+      "has_fabric": true,
+      "has_neoforge": true,
+      "has_parchment": true
+    }
+  ]
+}

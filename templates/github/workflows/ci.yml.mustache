@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.loader }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        loader: [fabric, neoforge]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "{{java_version}}"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Build ${{ matrix.loader }}
+        run: ./gradlew :${{ matrix.loader }}:build --stacktrace
+
+      - name: Upload ${{ matrix.loader }} artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: {{modid}}-${{ matrix.loader }}-jar
+          path: ${{ matrix.loader }}/build/libs/*.jar
+          if-no-files-found: ignore

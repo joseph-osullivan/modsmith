@@ -222,6 +222,9 @@ render_single_mc() {
     render "$TEMPLATES_DIR/neoforge-services.txt.mustache" \
       "$neo_res/META-INF/services/${PACKAGE_BASE}.platform.IPlatformHelper"
   fi
+
+  # GitHub Actions CI workflow (matrix over loaders).
+  render "$TEMPLATES_DIR/github/workflows/ci.yml.mustache" "$OUT_DIR/.github/workflows/ci.yml"
 }
 
 # ---------------------------------------------------------------------------
@@ -330,6 +333,9 @@ render_multimc() {
     rm -f "$inner_ctx"
     i=$((i + 1))
   done
+
+  # GitHub Actions CI workflow (matrix over MC × loader).
+  render "$MULTIMC_TEMPLATES_DIR/github/workflows/ci.yml.mustache" "$OUT_DIR/.github/workflows/ci.yml"
 }
 
 # ---------------------------------------------------------------------------
@@ -351,31 +357,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Gradle wrapper — copy verbatim if present, else `gradle wrapper`.
-# (Same as before — applies to both modes.)
+# Gradle wrapper — copy the pinned wrapper bundled at templates/gradle-wrapper/.
+# Applies to both single-MC and multi-MC modes (wrapper is the same).
+# Users no longer need `gradle` on PATH to bootstrap a scaffold.
 # ---------------------------------------------------------------------------
 
 WRAPPER_SRC="$MODSMITH_DIR/templates/gradle-wrapper"
-if [ -d "$WRAPPER_SRC" ]; then
-  mkdir -p "$OUT_DIR/gradle/wrapper"
-  cp -R "$WRAPPER_SRC/gradle/wrapper/." "$OUT_DIR/gradle/wrapper/" 2>/dev/null || true
-  for f in gradlew gradlew.bat; do
-    if [ -f "$WRAPPER_SRC/$f" ]; then
-      cp "$WRAPPER_SRC/$f" "$OUT_DIR/$f"
-      chmod +x "$OUT_DIR/$f" 2>/dev/null || true
-    fi
-  done
-elif command -v gradle >/dev/null 2>&1; then
-  (
-    cd "$OUT_DIR" || exit 1
-    if [ ! -f settings.gradle.bak ]; then cp settings.gradle settings.gradle.bak; fi
-    printf "rootProject.name = '%s'\n" "$MODID" > settings.gradle
-    gradle wrapper --gradle-version 9.2 --no-daemon -q || true
-    mv settings.gradle.bak settings.gradle
-  )
-else
-  warn "no gradle binary on PATH and no templates/gradle-wrapper/ stub; the scaffold will be missing ./gradlew. Run \`gradle wrapper --gradle-version 9.2\` in $OUT_DIR after install."
+WRAPPER_FILES=(
+  "gradle/wrapper/gradle-wrapper.jar"
+  "gradle/wrapper/gradle-wrapper.properties"
+  "gradlew"
+  "gradlew.bat"
+)
+
+if [ ! -d "$WRAPPER_SRC" ]; then
+  warn "templates/gradle-wrapper/ is missing from $MODSMITH_DIR; scaffold will not be self-bootstrapping"
+  exit 1
 fi
+
+for rel in "${WRAPPER_FILES[@]}"; do
+  src="$WRAPPER_SRC/$rel"
+  dst="$OUT_DIR/$rel"
+  if [ ! -f "$src" ]; then
+    warn "wrapper file missing from templates/gradle-wrapper/: $rel"
+    exit 1
+  fi
+  mkdir -p "$(dirname "$dst")"
+  cp "$src" "$dst"
+done
+
+# Preserve the executable bit on gradlew (cp inherits source perms on most
+# platforms, but force it here so a chmod-stripped source still works).
+chmod +x "$OUT_DIR/gradlew"
 
 # ---------------------------------------------------------------------------
 # Post-check: assert no `{{name}}` placeholders survived in rendered files.
