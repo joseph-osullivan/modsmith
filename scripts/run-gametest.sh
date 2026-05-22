@@ -4,7 +4,16 @@
 # known path, returns structured success/failure.
 #
 # Usage:
-#   run-gametest.sh [--log <path>] [--task <task>] [-- <gradle-args>...]
+#   run-gametest.sh [--log <path>] [--task <task>] [--subproject <:name>]
+#                   [--warmup] [-- <gradle-args>...]
+#
+# --warmup runs the gradle task once with results discarded (logs only) and
+# exits 0 immediately. Used to warm up the JVM + gradle daemon before the
+# "real" run; see references/gametest-rules.md (Rule 7).
+#
+# --subproject prepends a gradle subproject prefix to the task (e.g.
+# `--subproject :neoforge --task runGameTestServer` runs
+# `:neoforge:runGameTestServer`). Required in multiloader layouts.
 #
 # Exit 0 on green; 1 on test failure; 2 on usage error; 4 on JVM crash.
 # Stdout: one JSON line summarizing the run.
@@ -14,16 +23,34 @@
 
 LOG_PATH=""
 TASK="runGameTestServer"
+SUBPROJECT=""
+WARMUP=0
 GRADLE_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --log) LOG_PATH="$2"; shift 2 ;;
     --task) TASK="$2"; shift 2 ;;
+    --subproject) SUBPROJECT="$2"; shift 2 ;;
+    --warmup) WARMUP=1; shift ;;
     --) shift; GRADLE_ARGS=("$@"); break ;;
     *) warn "unknown arg: $1"; exit 2 ;;
   esac
 done
+
+# Compose the full gradle task path. If a subproject was supplied, prefix
+# the task with it (idempotent if the caller already passed a fully-qualified
+# task like ":fabric:runGameTestServer").
+if [ -n "$SUBPROJECT" ] && [[ "$TASK" != :* ]]; then
+  # Normalize: require subproject to start with `:` (e.g. `:fabric`).
+  case "$SUBPROJECT" in
+    :*) ;;
+    *) SUBPROJECT=":$SUBPROJECT" ;;
+  esac
+  FULL_TASK="${SUBPROJECT}:${TASK}"
+else
+  FULL_TASK="$TASK"
+fi
 
 if ! is_mc_mod_repo; then
   emit_json status=error reason=not_mc_mod_repo
@@ -34,7 +61,11 @@ ROOT=$(repo_root)
 cd "$ROOT"
 
 if [ -z "$LOG_PATH" ]; then
-  LOG_PATH="/tmp/mc-mod-gametest-$(date +%Y%m%d-%H%M%S)-$$.log"
+  if [ $WARMUP -eq 1 ]; then
+    LOG_PATH="/tmp/mc-mod-gametest-warmup-$(date +%Y%m%d-%H%M%S)-$$.log"
+  else
+    LOG_PATH="/tmp/mc-mod-gametest-$(date +%Y%m%d-%H%M%S)-$$.log"
+  fi
 fi
 mkdir -p "$(dirname "$LOG_PATH")"
 
@@ -42,11 +73,31 @@ mkdir -p "$(dirname "$LOG_PATH")"
 # throws DirectoryNotEmptyException if any prior run left state behind.
 find run/gametestserver -mindepth 1 -depth -delete 2>/dev/null || true
 
+# Warmup mode: run the task to warm the JVM + gradle daemon, discard the
+# result, exit 0. The caller is expected to invoke the script again without
+# --warmup for the run that actually counts. See references/gametest-rules.md
+# (Rule 7).
+if [ $WARMUP -eq 1 ]; then
+  START=$(date +%s)
+  set +e
+  ./gradlew "$FULL_TASK" "${GRADLE_ARGS[@]}" 2>&1 | tee "$LOG_PATH" >&2
+  WARMUP_EXIT=${PIPESTATUS[0]}
+  set -e
+  DURATION=$(( $(date +%s) - START ))
+  emit_json \
+    status=warmup_done \
+    gradle_exit="$WARMUP_EXIT" \
+    duration_s="$DURATION" \
+    log="$LOG_PATH" \
+    task="$FULL_TASK"
+  exit 0
+fi
+
 # Run gradle, tee to log, capture exit. We intentionally avoid `tee` exit-code
 # semantics issues by using PIPESTATUS.
 START=$(date +%s)
 set +e
-./gradlew "$TASK" "${GRADLE_ARGS[@]}" 2>&1 | tee "$LOG_PATH" >&2
+./gradlew "$FULL_TASK" "${GRADLE_ARGS[@]}" 2>&1 | tee "$LOG_PATH" >&2
 GRADLE_EXIT=${PIPESTATUS[0]}
 set -e
 DURATION=$(( $(date +%s) - START ))
@@ -74,6 +125,7 @@ emit_json \
   passed="$PASSED" \
   failed="$FAILED" \
   duration_s="$DURATION" \
-  log="$LOG_PATH"
+  log="$LOG_PATH" \
+  task="$FULL_TASK"
 
 exit $EXIT

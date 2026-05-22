@@ -38,7 +38,9 @@ mymod/
 │           ├─ assets/mymod/                         # textures, models, lang
 │           ├─ data/mymod/                           # tags, recipes, loot tables
 │           ├─ pack.mcmeta                           # required if assets/ or data/ non-empty
-│           └─ mymod.mixins.json                     # mixin config shared by both loaders (refmap toggled per-loader)
+│           ├─ mymod.mixins.json                     # mixin config shared by both loaders (refmap toggled per-loader)
+│           └─ META-INF/
+│              └─ accesstransformer.cfg              # single-source AT; NeoForge reads directly, Fabric AW generated from it at build time
 │
 ├─ fabric/                         # Fabric-specific code + service registrations
 │  ├─ build.gradle                 # applies fabric-loom; depends on :common
@@ -71,7 +73,6 @@ mymod/
          └─ resources/
             └─ META-INF/
                ├─ neoforge.mods.toml                 # NeoForge manifest (NOT mods.toml)
-               ├─ accesstransformer.cfg              # authored here; Fabric's AW is generated from it
                └─ services/
                   ├─ com.example.mymod.platform.IPlatformHelper
                   └─ com.example.mymod.platform.IRegistryHelper

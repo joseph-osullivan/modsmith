@@ -40,7 +40,168 @@ The orchestrator passes you a `targets` matrix in your initial prompt:
 
 ### Reliability rules
 
-Detailed gametest reliability rules (timing/RNG/structure/setup landmines) are codified in `references/gametest-rules.md`. The rules in this file are still authoritative for now; future revisions of this agent will point you there as the canonical source.
+Detailed gametest reliability rules (timing/RNG/structure/setup landmines) are codified in `references/gametest-rules.md`. The condensed rules below are normative — follow them on every test you write, even if you don't fetch the reference doc.
+
+## Gametest reliability rules (must follow)
+
+### Rule 1: Use `succeedWhen` / `succeedIf` with timeout — never `runAtTickTime` for assertions
+
+`runAtTickTime` fires at a fixed tick. If the world isn't ready (chunk loading, entity init, structure populate), the assertion fires too early and the test flakes. `succeedWhen` re-evaluates every tick until the assertion holds or the timeout fires (default 200 ticks = 10s).
+
+**Right:**
+
+```java
+helper.useBlock(shopPos, player);
+helper.succeedWhen(() -> {
+    ItemStack receipt = player.getMainHandItem();
+    helper.assertTrue(
+        receipt.getOrDefault(ModDataComponents.DISCOUNT_PCT, 0) >= 10,
+        "discount component should be >= 10");
+});
+```
+
+**Wrong:**
+
+```java
+helper.useBlock(shopPos, player);
+helper.runAtTickTime(5, () -> {
+    // BAD: fixed-tick assertion — flakes if the interaction doesn't resolve by tick 5
+    helper.assertTrue(
+        player.getMainHandItem().getOrDefault(ModDataComponents.DISCOUNT_PCT, 0) >= 10,
+        "discount component should be >= 10");
+});
+```
+
+`runAtTickTime` is fine for **scheduled actions** ("at tick 5, right-click the block"), but never for assertions. Use `helper.succeedOnTickWhen(400, ...)` to extend the timeout when needed; pick generous timeouts — a fast test succeeds early, it doesn't fail late.
+
+### Rule 2: One structure per test — never share world state
+
+Sharing a single `.nbt` template across multiple tests means each test inherits whatever the previous one mutated. Even `killAllEntities` between tests leaks block states and tile entities.
+
+**Right:** one `.nbt` per `@GameTest`, at `data/<modid>/gametest/structures/<test_method_name>.nbt`, referenced as `template = "<test_method_name>"`. Verify the structure is in the expected initial state before the first action:
+
+```java
+@GameTest(templateNamespace = "mymod", template = "shopkeeper_discount")
+public static void heroTagAppliesDiscount(GameTestHelper helper) {
+    helper.assertBlockNotPresent(ModBlocks.SHOPKEEPER_DESK.get(), new BlockPos(2, 2, 2));
+    // ... rest of the test
+}
+```
+
+**Wrong:** reusing a template across multiple tests without a precondition check (silent state leak).
+
+If two tests genuinely need the same structure (true duplication, not "close enough"), share the `.nbt` but document with a `// shared with: <test_name>` comment so future runs know the relationship.
+
+### Rule 3: Tick-delay any post-spawn assertion
+
+Entities don't finish initializing in the tick they're spawned. AI goals, attribute modifiers, data components, and equipment all settle 1–2 ticks later. Asserting properties of a freshly-spawned entity in the same tick silently fails — the field hasn't been populated yet.
+
+**Right:**
+
+```java
+Cow cow = helper.spawnWithNoFreeWill(EntityType.COW, new BlockPos(2, 2, 2));
+helper.runAfterDelay(2, () -> {
+    helper.assertTrue(
+        cow.getData(ModData.WEIGHT_KG).isPresent(),
+        "cow should have a weight component after init");
+    helper.succeed();
+});
+```
+
+**Wrong:**
+
+```java
+Cow cow = helper.spawnWithNoFreeWill(EntityType.COW, new BlockPos(2, 2, 2));
+// BAD: read in the same tick the entity spawned in
+helper.assertTrue(cow.getData(ModData.WEIGHT_KG).isPresent(), "...");
+helper.succeed();
+```
+
+For longer settle times (complex AI behavior), prefer `helper.succeedWhen(...)` (Rule 1) — it retries every tick.
+
+### Rule 4: Seeded RNG via `SeededHelpers` for any loot/mob/behavior test
+
+`helper.getLevel().random` is server-shared and changes between runs. Anything that gates on RNG (loot tables, mob behavior, growth, drops) will flake if it samples that directly. Use `SeededHelpers` (shipped in the gametest common module) for deterministic draws.
+
+**Right:**
+
+```java
+try (var ignored = SeededHelpers.pinLevelRandom(helper, 0xC0FFEEL)) {
+    Zombie zombie = helper.spawnWithNoFreeWill(EntityType.ZOMBIE, new BlockPos(2, 2, 2));
+    zombie.hurt(helper.getLevel().damageSources().generic(), Float.MAX_VALUE);
+    helper.succeedWhen(() -> {
+        List<ItemEntity> drops = helper.getEntities(new BlockPos(2, 2, 2), 3.0, EntityType.ITEM);
+        helper.assertTrue(
+            drops.stream().anyMatch(e -> e.getItem().is(ModItems.HERO_EMBLEM.get())),
+            "hero emblem should drop with seed 0xC0FFEE");
+    });
+}
+```
+
+**Wrong:**
+
+```java
+// BAD: relies on shared server RNG; passes locally, flakes in CI
+Zombie zombie = helper.spawnWithNoFreeWill(EntityType.ZOMBIE, new BlockPos(2, 2, 2));
+zombie.hurt(helper.getLevel().damageSources().generic(), Float.MAX_VALUE);
+// ... unseeded assertion against drops
+```
+
+Use `SeededHelpers.forTest(helper)` for draws the test itself does; use `pinLevelRandom(helper, seed)` when the behavior under test reads from `level.random` internally. For distribution-of-drops tests, document explicitly that seeding is skipped and assert on distribution properties, not exact outcomes.
+
+### Rule 5: `@spec` JavaDoc anchor — every test quotes the planner's intent
+
+Every gametest carries a one-line `@spec` JavaDoc tag quoting the planner's intent. The reviewer cross-references this against the assertions — if the asserts don't exercise what `@spec` says, that's a reviewer kick-back.
+
+**Right:**
+
+```java
+/**
+ * @spec Hero-tagged players receive a 10% discount on shopkeeper trades.
+ */
+@GameTest(templateNamespace = "mymod", template = "hero_discount")
+public static void heroTagAppliesDiscount(GameTestHelper helper) {
+    // ...
+}
+```
+
+**Wrong:** no `@spec`, or a `@spec` describing implementation ("calls `applyDiscount`") rather than observable intent. Phrase `@spec` as a single declarative sentence about what the player should be able to do, observed externally.
+
+### Rule 6: Positive + negative pair per work unit
+
+A test that always returns the same result (regardless of input) passes a positive-only assertion vacuously. Every work unit ships a **matched positive/negative pair** so broken-always-true code fails the negative test.
+
+**Right:**
+
+```java
+/** @spec Hero-tagged players receive a 10% discount on shopkeeper trades. */
+public static void heroTagAppliesDiscount(GameTestHelper helper) {
+    Player player = helper.makeMockPlayer();
+    player.addTag("hero");
+    // ... assert discount applied
+}
+
+/** @spec Players without the hero tag receive no discount on shopkeeper trades. */
+public static void noTagNoDiscount(GameTestHelper helper) {
+    Player player = helper.makeMockPlayer();
+    // no hero tag
+    // ... assert discount NOT applied
+}
+```
+
+**Wrong:** positive-only coverage (only the `heroTagAppliesDiscount` test). If the code always applies the discount, the positive passes and the bug ships.
+
+The reviewer flags any work unit with a positive test but no matching negative (or vice versa) as incomplete coverage.
+
+### Rule 7: First gametest run after a build is JVM cold-start — use the warmup pass
+
+The first run after a build pays for JVM cold-start (~5–10s of JIT warmup during MC server bootstrap). Tests running during that window have unpredictable tick costs and can falsely time out.
+
+**Right:** `scripts/run-gametest.sh --warmup` runs the suite once with results discarded, then real runs follow. CI and dev-loop scripts pass `--warmup` by default. Only skip it for fast local debug iteration where the JVM is already warm.
+
+**Wrong:** reporting a "flake" without first having run with `--warmup`. Cold-start timeouts look like flakes but are deterministic.
+
+Full discussion + edge cases in `references/gametest-rules.md`.
 
 ### When `layout == "single-loader"` or `"monolith"`
 
