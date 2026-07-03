@@ -306,7 +306,9 @@ multi-MC snippet below, then run the translator with `--single-mc`
 (add `--mc-version <v>` if the user picked one MC out of several):
 
 ```bash
-VARS_FILE=$(mktemp /tmp/modsmith-vars.XXXXXX.json)
+# NOTE: trailing Xs only — BSD (macOS) mktemp treats `XXXXXX.json` as a
+# literal filename, so a suffixed template collides on the second init.
+VARS_FILE=$(mktemp /tmp/modsmith-vars.XXXXXX)
 python3 "$MODSMITH_DIR/scripts/_init_translate_resolver.py" \
   --resolver "$RESOLVER_FILE" \
   --identity "$IDENTITY_FILE" \
@@ -316,7 +318,7 @@ python3 "$MODSMITH_DIR/scripts/_init_translate_resolver.py" \
 bash "$MODSMITH_DIR/scripts/expand-templates.sh" \
   --vars "$VARS_FILE" \
   --out  "$PWD"
-rm -f "$VARS_FILE"
+rm -f "$IDENTITY_FILE" "$RESOLVER_FILE" "$VARS_FILE"
 ```
 
 For reference (and for debugging a bad render), the resolver→vars field
@@ -349,7 +351,8 @@ files, then invoke the translator helper to produce the multi-MC
 
 ```bash
 # 1. Identity-only fields the user supplied + selected loaders.
-IDENTITY_FILE=$(mktemp /tmp/modsmith-identity.XXXXXX.json)
+#    (Trailing Xs only — BSD mktemp treats a suffixed template literally.)
+IDENTITY_FILE=$(mktemp /tmp/modsmith-identity.XXXXXX)
 cat > "$IDENTITY_FILE" <<JSON
 {
   "modid": "$MODID",
@@ -364,11 +367,11 @@ cat > "$IDENTITY_FILE" <<JSON
 JSON
 
 # 2. Persist the raw resolver JSON for the translator.
-RESOLVER_FILE=$(mktemp /tmp/modsmith-resolver.XXXXXX.json)
+RESOLVER_FILE=$(mktemp /tmp/modsmith-resolver.XXXXXX)
 printf '%s' "$RAW_JSON" > "$RESOLVER_FILE"
 
 # 3. Run the translator — produces multi-MC vars.json.
-VARS_FILE=$(mktemp /tmp/modsmith-vars.XXXXXX.json)
+VARS_FILE=$(mktemp /tmp/modsmith-vars.XXXXXX)
 python3 "$MODSMITH_DIR/scripts/_init_translate_resolver.py" \
   --resolver "$RESOLVER_FILE" \
   --identity "$IDENTITY_FILE" \

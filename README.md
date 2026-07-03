@@ -6,13 +6,13 @@ Scaffolds multi-loader (Fabric + NeoForge) mods, orchestrates the full dev cycle
 
 ## Status
 
-**v0.2.1 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.2.0 rebuilt `/modsmith:develop` as a **two-lane workflow**: Lane 1 (default) is a lightweight branch → failing test → fix → gate → PR loop with no ceremony; Lane 2 (opt-in) keeps the full orchestration (architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff) for genuinely multi-subsystem features. It also ships a compile-probe API oracle (`scripts/symbol-check.sh`), a verify-protocol + staleness banner for the landmine index, and arena-isolation GameTest rules distilled from field flake hunts. Distribution via the official Claude Code marketplace will follow real-world migration validation.
+**v0.3.0 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.3.0 adds the `engage` skill (multi-day engagement scaffolding: brief, ledger, decision menus, considerations), self-hosted marketplace packaging, and closes the residual canary findings from the v0.2.1 gate (macOS-safe temp-file handling in init, guarded LICENSE jar-stamping, corrected NeoForge loader-range default). v0.2.0 rebuilt `/modsmith:develop` as a **two-lane workflow**: Lane 1 (default) is a lightweight branch → failing test → fix → gate → PR loop with no ceremony; Lane 2 (opt-in) keeps the full orchestration (architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff) for genuinely multi-subsystem features. It also ships a compile-probe API oracle (`scripts/symbol-check.sh`), a verify-protocol + staleness banner for the landmine index, and arena-isolation GameTest rules distilled from field flake hunts. Distribution via the official Claude Code marketplace will follow real-world migration validation.
 
 ### Validation status
 
 The v0.2.0 release gate ran end-to-end: both documented init canaries (single-MC and multi-MC) plus one full Lane 1 `develop` run on a fresh scaffold. All three reached green — but **only via manual workarounds**: the scaffolds were red as rendered (template defects), and the doctor audit reported false hard-fails against repos the plugin itself had just scaffolded. **v0.2.1 fixes every finding from that gate** across templates, scripts, and skill docs.
 
-The standing canary criterion is that a fresh scaffold builds green **as rendered** — `./gradlew build` succeeds straight after `/modsmith:init`, with no hand edits — and the v0.2.1 change set re-ran the canaries to re-verify exactly that.
+The standing canary criterion is that a fresh scaffold builds green **as rendered** — `./gradlew build` succeeds straight after `/modsmith:init`, with no hand edits — and the v0.2.1 change set re-ran the canaries to re-verify exactly that (multi-MC: clean, zero findings; single-MC: green as rendered, with three residual doc/template nits fixed in v0.3.0).
 
 ## What it does
 

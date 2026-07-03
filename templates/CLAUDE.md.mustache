@@ -37,6 +37,12 @@ Per-MC pins use the `<key>_{{mc_suffix}}` suffix scheme for MC {{mc_version}}.
 New behavior needs a failing Tier-1 test first whenever the logic is
 JVM-testable; write the test, watch it fail, then implement.
 
+## License
+
+The SPDX id (`{{license}}`) is recorded in `gradle.properties` and both mod
+manifests, but the scaffold does not generate license text. Add a `LICENSE`
+file at the repo root — once present, the build stamps it into every jar.
+
 ## Version-bump rule
 
 `mod_version` in `gradle.properties` is the mod's version. Bump it on every

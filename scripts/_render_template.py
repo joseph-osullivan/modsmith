@@ -43,7 +43,7 @@ def _derive(ctx: dict) -> dict:
     if mc and "mc_version_range" not in ctx:
         ctx["mc_version_range"] = f"[{mc},)"
     if "neoforge_loader_version_range" not in ctx:
-        ctx["neoforge_loader_version_range"] = "[4,)"
+        ctx["neoforge_loader_version_range"] = "[1,)"
     if mc and not ctx.get("neoform_version"):
         # Fallback placeholder only — the resolver/translator normally
         # supplies the real revision from maven.neoforged.net.

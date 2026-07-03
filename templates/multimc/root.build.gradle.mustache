@@ -107,8 +107,13 @@ subprojects {
     }
 
     tasks.withType(Jar).configureEach {
-        from(rootProject.file('LICENSE')) {
-            rename { "${it}_${modName}" }
+        // init records the SPDX id but does not generate license text; the
+        // jar copy only applies once a LICENSE file exists at the repo root.
+        def licenseFile = rootProject.file('LICENSE')
+        if (licenseFile.exists()) {
+            from(licenseFile) {
+                rename { "${it}_${modName}" }
+            }
         }
         manifest {
             attributes([
