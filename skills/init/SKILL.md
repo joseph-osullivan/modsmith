@@ -65,9 +65,12 @@ docstring for the field-by-field mapping rules (in particular:
 `mc_suffix` is derived from `mc_version` by replacing `.` with `_`;
 `java_version_shared` is the **min** of per-MC `java_version`s — every
 MC line consumes top-level `:common`'s bytecode and an older JVM cannot
-load newer bytecode; `has_fabric`/`has_neoforge` flag per-MC loader
-inclusion; `is_unobfuscated`/`fml_has_getcurrent` are true for MC ≥ 26
-and drive the obfuscation-aware template branches).
+load newer bytecode; `java_version_daemon` is `max(21, java_version)`
+— the JVM that RUNS Gradle, rendered into
+`gradle/gradle-daemon-jvm.properties`; `has_fabric`/`has_neoforge`
+flag per-MC loader inclusion; `is_unobfuscated`/`fml_has_getcurrent`
+are true for MC ≥ 26 and drive the obfuscation-aware template
+branches).
 
 **`neoform_version`:** `resolve-versions.sh` queries
 <https://maven.neoforged.net/releases/net/neoforged/neoform/maven-metadata.xml>
@@ -273,15 +276,20 @@ NOTE: NeoForm version for <mc> could not be resolved. gradle.properties
       before the :versions:<mc>:common build will succeed.
 ```
 
-**Non-interactive rule:** when EVERY input came from CLI flags
-(including the mode, via `--multimc`/`--single-mc` where 2+ MCs
-resolved), do NOT prompt — print the summary above and proceed
-directly. This is what makes the smoke-test invocations at the bottom
-of this file work end-to-end in headless/subagent contexts (where
-`AskUserQuestion` may not exist at all).
+**Non-interactive rule:** when the invocation used the CLI form, do NOT
+prompt — print the summary above and proceed directly. **Documented
+defaults filling omitted optional flags count as CLI-supplied inputs**
+(e.g. the smoke-test canaries below omit `--version`/`--description`
+and still qualify); the only extra requirement is the mode: when 2+
+distinct MCs resolved, `--multimc`/`--single-mc` must have been passed
+(with 1 distinct MC the mode is implied). This is what makes the
+smoke-test invocations at the bottom of this file work end-to-end in
+headless/subagent contexts (where `AskUserQuestion` may not exist at
+all).
 
-Otherwise (interactive run, or some inputs were defaulted), use
-`AskUserQuestion` for the confirmation. Default Y. On `n`, exit
+Otherwise — i.e. any input was gathered interactively via
+`AskUserQuestion` in Step 2/3, or the run is interactive by nature —
+use `AskUserQuestion` for the confirmation. Default Y. On `n`, exit
 cleanly (no files written).
 
 ## Step 5 — build the vars JSON + render
@@ -326,6 +334,7 @@ mapping the translator applies per row is:
 | `parchment.version` | `parchment_version` (nullable) |
 | — (derived: parchment non-null) | `has_parchment` |
 | — (derived: MC ≥ 26) | `is_unobfuscated`, `fml_has_getcurrent` |
+| — (derived: `max(21, java_version)`) | `java_version_daemon` (JVM that runs Gradle → `gradle/gradle-daemon-jvm.properties`) |
 
 Identity fields (`modid`, `mod_name`, `mod_version`, `description`,
 `license`, `authors`, `package_base`, `loaders`) are carried through
@@ -386,14 +395,19 @@ The renderer:
 - Auto-detects multi-MC mode by inspecting `vars.json` (mc_versions
   with 2+ entries).
 - Renders a `CLAUDE.md` (project conventions: test tiers, version-bump
-  rule, build commands), a `.github/workflows/ci.yml` (build matrix),
-  and a Tier-1 sample test at
+  rule, build commands), a `.github/workflows/ci.yml` (full
+  `./gradlew build` gate — same proof command as Step 7, so
+  `:common:test` runs in CI too), and a Tier-1 sample test at
   `common/src/test/java/<pkg>/unit/ScaffoldSmokeTest.java` in both modes.
 - Verifies no `{{...}}` placeholders survived; exits 1 if any did.
 - Always drops a pinned Gradle 9.2.0 (GA) wrapper (jar + properties +
   gradlew + gradlew.bat) into the scaffold from
   `templates/gradle-wrapper/`. No `gradle` binary is required on the
   user's PATH.
+- Renders `gradle/gradle-daemon-jvm.properties` (Gradle daemon JVM
+  criteria, `toolchainVersion=<java_version_daemon>`) so Gradle picks a
+  Java 21+ installed JDK to RUN the build even when `JAVA_HOME` points
+  at an older JDK — see the launch-JVM preflight in Step 7.
 
 If the renderer exits non-zero, **stop** and surface its stderr. Do not
 attempt to clean up partial output — the user's cwd is now in an
@@ -440,6 +454,27 @@ still works, the user just won't have a clean commit history.
 The renderer always ships a pinned Gradle 9.2.0 wrapper, so `./gradlew`
 is guaranteed to be present after Step 5.
 
+### Launch-JVM preflight (Java 21+ required to RUN Gradle)
+
+No `gradle` install is needed, but the JVM that **launches** Gradle must
+be Java 21+: the buildscript classpath (the fabric-loom / ModDevGradle
+plugin jars) carries a module-metadata constraint on the runtime JVM,
+and the foojay toolchain convention only provisions **compile/test**
+toolchains — it cannot upgrade the JVM Gradle itself runs on. The
+scaffold renders `gradle/gradle-daemon-jvm.properties` so Gradle
+auto-selects a matching installed JDK for the build JVM even when
+`JAVA_HOME` points at an older one; that still requires a suitable JDK
+to be **installed**. Before the proof build, check:
+
+```bash
+java -version 2>&1 | head -1
+```
+
+If the default JVM is older than 21 and no JDK matching the daemon
+criteria (`gradle/gradle-daemon-jvm.properties`) is installed, tell the
+user to install a matching JDK (e.g. Temurin) — or, as a stopgap,
+export `JAVA_HOME` to any installed JDK 21+ — before building.
+
 **Both modes use the same proof command** — the full build, so every
 subproject (including `:common` and, in multi-MC mode, each
 `:versions:<mc>:common`) compiles, tests, and assembles:
@@ -469,7 +504,10 @@ If it fails, **do not retry blindly**. Show the user the gradle output,
 note the likely cause (network, Java version mismatch, version pin
 ahead of what's published, or — in multi-MC mode with placeholder
 NeoForm versions — an unresolved `neoform_version_<mc_suffix>` line),
-and exit. The scaffold itself is still valid; only the proof-build
+and exit. In particular, `Could not resolve net.fabricmc:fabric-loom...
+Dependency requires at least JVM runtime version 21. This build uses a
+Java <N> JVM.` means the launch JVM is too old — see the preflight
+above. The scaffold itself is still valid; only the proof-build
 failed.
 
 ## Step 8 — print next steps
@@ -485,8 +523,9 @@ Scaffold complete in <cwd>.
 Files rendered:
   build.gradle, settings.gradle, gradle.properties
   CLAUDE.md (project conventions: test tiers, version-bump rule, build commands)
-  .github/workflows/ci.yml (CI build matrix over loaders)
+  .github/workflows/ci.yml (CI gate: full ./gradlew build, incl. :common:test)
   gradlew, gradlew.bat, gradle/wrapper/ (pinned Gradle 9.2.0 wrapper)
+  gradle/gradle-daemon-jvm.properties (build-JVM criteria: Java <N>)
   common/ (loader-neutral code + mixin config + AT + JUnit wiring
            + sample Tier-1 test)
   fabric/ (entrypoint + platform helper + manifest)
@@ -500,7 +539,9 @@ Next steps:
      loader-specific impls of common interfaces live in the matching
      fabric/ and neoforge/ subprojects.
   3. To verify the scaffold compiles green any time (no gradle install
-     required — the bundled wrapper downloads Gradle 9.2.0 on first run):
+     required — the bundled wrapper downloads Gradle 9.2.0 on first run;
+     you DO need an installed JDK 21+ for Gradle itself to run on —
+     gradle/gradle-daemon-jvm.properties selects it automatically):
         ./gradlew build
      or, per loader (incremental iteration only — not the full gate):
         ./gradlew :fabric:build :neoforge:build
@@ -524,8 +565,9 @@ Layout:
   versions/<mc>/fabric/                Loom per MC
   versions/<mc>/neoforge/              MDG per MC
   CLAUDE.md                            project conventions (test tiers, version-bump rule)
-  .github/workflows/ci.yml             CI build matrix over MC × loader
+  .github/workflows/ci.yml             CI gate: full ./gradlew build (incl. :common:test)
   gradlew, gradlew.bat, gradle/wrapper/  pinned Gradle 9.2.0 wrapper (bundled)
+  gradle/gradle-daemon-jvm.properties  build-JVM criteria (Java <N>, highest across MC lines)
 
 MC lines scaffolded:
   - 1.21.1  Java 21  neoform 1.21.1-20240808.144430
@@ -541,7 +583,9 @@ Next steps:
      versions/<mc>/common/ — `/modsmith:doctor` enforces this.
   3. Add gameplay code via `/modsmith:develop` (preferred) or by hand.
   4. To verify everything compiles green (no gradle install required —
-     the bundled wrapper downloads Gradle 9.2.0 on first run):
+     the bundled wrapper downloads Gradle 9.2.0 on first run; you DO
+     need an installed JDK 21+ for Gradle itself to run on —
+     gradle/gradle-daemon-jvm.properties selects it automatically):
         ./gradlew build
      or, per MC line (incremental iteration only — not the full gate):
         ./gradlew :versions:1.21.1:fabric:build :versions:1.21.1:neoforge:build

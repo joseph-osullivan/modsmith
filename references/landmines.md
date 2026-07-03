@@ -141,9 +141,20 @@ Fabric + NeoForge.
   ```
   in the root `subprojects {}` block. The Foojay resolver
   (`org.gradle.toolchains.foojay-resolver-convention`) auto-downloads
-  the toolchain if not present. Users should not be running mismatched
-  JDKs locally — Gradle picks the toolchain regardless of
-  `JAVA_HOME`.
+  the toolchain if not present — so **compile/test** tasks pick the
+  right JDK regardless of `JAVA_HOME`.
+- **Toolchains do NOT cover the JVM that runs Gradle itself.** The
+  buildscript classpath (the fabric-loom / ModDevGradle plugin jars)
+  carries a module-metadata constraint requiring a **Java 21+ launch
+  JVM**, and foojay provisioning cannot satisfy it. Running `./gradlew`
+  under an older `JAVA_HOME` (e.g. a Java 17 default) fails during
+  configuration with:
+  `Could not resolve net.fabricmc:fabric-loom:... Dependency requires
+  at least JVM runtime version 21. This build uses a Java 17 JVM.`
+  modsmith scaffolds render `gradle/gradle-daemon-jvm.properties`
+  (daemon JVM criteria) so Gradle auto-selects a matching installed
+  JDK for the build JVM; in repos without that file, export
+  `JAVA_HOME` to a JDK 21+ before building.
 - `/modsmith:doctor` reads the MC version from `gradle.properties` and
   hard-fails if the toolchain doesn't match the rule.
 

@@ -14,11 +14,12 @@ mymod/
 ├─ settings.gradle                 # includes :common, :fabric, :neoforge; pluginManagement {} for Loom + MDG
 ├─ gradle.properties               # single source of truth for ALL versions (key: minecraft_version)
 ├─ CLAUDE.md                       # project conventions (test tiers, version-bump rule, build commands)
-├─ .github/workflows/ci.yml        # CI build matrix
+├─ .github/workflows/ci.yml        # CI: full ./gradlew build gate
 ├─ gradle/
 │  ├─ wrapper/
 │  │  ├─ gradle-wrapper.jar
 │  │  └─ gradle-wrapper.properties
+│  ├─ gradle-daemon-jvm.properties # build-JVM criteria (Java 21+ to run Gradle)
 │  └─ libs.versions.toml           # optional, version catalog
 ├─ gradlew
 ├─ gradlew.bat
@@ -398,6 +399,7 @@ The render flow for multi-MC mode:
 | `templates/multimc/gradle.properties.mustache` | `gradle.properties` | once |
 | `templates/CLAUDE.md.mustache` | `CLAUDE.md` | once |
 | `templates/multimc/github/workflows/ci.yml.mustache` | `.github/workflows/ci.yml` | once |
+| `templates/gradle-daemon-jvm.properties.mustache` | `gradle/gradle-daemon-jvm.properties` | once |
 | `templates/multimc/common.build.gradle.mustache` | `common/build.gradle` | once |
 | `templates/ScaffoldSmokeTest.java.mustache` | `common/src/test/java/<pkg>/unit/ScaffoldSmokeTest.java` | once |
 | `templates/multimc/versions.common.build.gradle.mustache` | `versions/<mc>/common/build.gradle` | per MC |
