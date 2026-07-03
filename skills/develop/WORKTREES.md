@@ -1,4 +1,4 @@
-# Parallel git worktrees for `/mc-mod-develop`
+# Parallel git worktrees for `/modsmith:develop` (Lane 2)
 
 When the architect outputs `parallel_groups` with more than one subtask, the orchestrator runs those builders in **parallel git worktrees**. Each subtask gets its own worktree at `.trees/{subtask_id}` on its own branch `agent/{subtask_id}`.
 
@@ -37,7 +37,7 @@ The script intentionally does *not* warm the build cache. If you want that:
 
 ## Builder invocation
 
-For each worktree, the orchestrator spawns one `mc-mod-builder` subagent. The Agent tool's `prompt` includes:
+For each worktree, the orchestrator spawns one `modsmith-builder` subagent. The Agent tool's `prompt` includes:
 
 - The subtask's `name`, `description`, `acceptance_criteria`, `files_to_modify` (verbatim from `architect.json`).
 - The `work_unit_key` (idempotency token from `state.json.work_items[i].work_unit_key`).

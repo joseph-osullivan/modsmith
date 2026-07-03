@@ -1,24 +1,77 @@
 ---
-name: mc-mod-develop
-description: "Autonomous Minecraft mod development workflow with task decomposition, checkpointed resume, and parallel worktree builds. Orchestrates architect → research → planner → builder(s) → gametest-author → scenario-runner/analyzer → reviewer → PR. Resumes from disk if interrupted. Scales to large multi-subtask features. Use for any feature work on a Minecraft mod (NeoForge / Forge / Fabric)."
+name: develop
+description: "Use for ANY feature, bug-fix, refactor, or test work on a Minecraft mod (NeoForge / Fabric — single-loader, multi-loader, or multi-MC repos). Lane 1 (default): branch → failing test → fix → gate → PR, no ceremony. Lane 2 (opt-in, for genuinely multi-subsystem features): architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff."
+when_to_use: "Any request to add, fix, refactor, or test code in a Minecraft mod repo — 'add a feature', 'fix this bug', 'write a GameTest', 'port to a new MC version'. Invoke BEFORE writing code."
 user-invocable: true
 allowed-tools: Agent, Read, Glob, Grep, Bash, Write, Edit, WebSearch, WebFetch, TaskCreate, TaskUpdate, TaskList, TaskGet, AskUserQuestion
 ---
 
-# /mc-mod-develop — checkpointed multi-agent development loop
+# /modsmith:develop — two-lane development workflow
 
-You are the **orchestrator** for a closed-loop development workflow on a Minecraft mod. You coordinate specialized subagents (`mc-mod-architect`, `researcher`, `planner`, `mc-mod-builder`, `mc-gametest-author`, `mc-scenario-author`, `mc-scenario-runner`, `mc-scenario-analyzer`, `reviewer`) to take a feature from idea to merged-and-validated.
+Two lanes. **Lane 1 is the default** and covers almost all work: one
+coherent change, one branch, one PR, tests as the gate, no run directory,
+no checkpoint file. **Lane 2** is the orchestrated machine — architect
+decomposition, parallel builders in worktrees, durable `state.json`,
+dev-server handoff — and is **opt-in only** for tasks that genuinely
+decompose into 3+ independent subtasks.
 
-You are **not a subagent yourself** — you are the skill body, executing as a deterministic state machine over a durable checkpoint. This is the lesson from Cognition's Devin work: multi-agent choreography costs more than it saves; a single-threaded orchestrator with explicit state on disk wins.
+Why this shape: the checkpoint-everything design was built for long
+multi-subtask runs, but field history across two dozen archived runs
+shows the ceremony cost more than it saved for typical work — state files
+rotted into lies while plain branch→test→PR loops shipped fine. A state
+file nobody resumes from is not a checkpoint, it's a liability. Lane 2
+keeps the machinery for the tasks that need it (its parallel builders
+demonstrably paid off only on zero-file-overlap decompositions); Lane 1
+legitimizes what works.
+
+**Design principles (apply to any change to this skill or its agents):**
+
+- The acceptance criteria: *a future mid-tier-model session codes faster
+  here and makes fewer mistakes.* For every mechanism ask: does it earn
+  its ceremony? and does it age well across MC/loader version jumps, or
+  decay into stale, actively-misleading facts?
+- Tooling that **executes** (verify rules, scripts, hooks, tests) rots
+  loudly — it breaks and gets fixed. Tooling that **instructs** (prose,
+  landmine entries, state files) rots silently — it keeps sounding
+  authoritative after it stops being true. Prefer executing form; give
+  instructing form a staleness signal.
+- **Pilot before codify:** process changes ship only after a real-work
+  pilot.
+
+## Lane selection
+
+- **Lane 1** unless told otherwise. A bug fix, a feature in one or two
+  subsystems, a test batch, a refactor — all Lane 1, even when they touch
+  many files.
+- **Lane 2** when the user explicitly asks for decomposition/parallelism,
+  or when your read of the task finds **3+ subtasks with disjoint files
+  that would genuinely proceed in parallel** — in which case *propose*
+  Lane 2 with the subtask sketch and let the user confirm. Never silently
+  escalate. **Admission test:** the architect must be able to write a
+  zero-file-overlap (or provably disjoint-method) ownership plan per
+  builder; if it can't, Lane 1. Budget the post-merge wiring step
+  (deferred aggregator registration means builders can't run their own
+  GameTests) as a real gate.
+- Mid-Lane-1 discovery that the task is bigger than scoped → stop, say
+  so, propose either a scope cut (ship the coherent core) or a Lane 2
+  restart.
+
+In Lane 2 you are the **orchestrator** for a closed-loop workflow,
+coordinating the plugin's specialized subagents (`modsmith-architect`,
+`modsmith-builder`, `modsmith-gametest-author`, `modsmith-scenario-author`,
+`modsmith-scenario-runner`, `modsmith-scenario-analyzer`,
+`modsmith-log-watcher`, `modsmith-reviewer`) as a deterministic state
+machine over a durable checkpoint — single-threaded orchestration with
+explicit state on disk, never free-form multi-agent choreography.
 
 ## Required reading
 
 Before doing anything else, read these files in this order:
 
-1. **`CHECKPOINT.md`** in this skill folder — the `state.json` schema you'll be reading and writing.
-2. **`WORKTREES.md`** in this skill folder — parallel-build rules and the static-vs-runtime split.
-3. **`references/landmines.md`** (plugin root) — cross-run index of MC API changes that have burned past runs. Glance at it on bootstrap; consult it whenever a builder reports a "cannot find symbol" error before spawning a researcher.
-4. The host project's **`CLAUDE.md`** — conventions, landmines, test tiers.
+1. **`references/landmines.md`** (plugin root) — cross-run index of MC API changes that have burned past runs. Glance at it on bootstrap; consult it whenever a "cannot find symbol" error appears, before spawning a researcher.
+2. The host project's **`CLAUDE.md`** — conventions, landmines, test tiers.
+3. *(Lane 2 only)* **`CHECKPOINT.md`** in this skill folder — the `state.json` schema you'll be reading and writing.
+4. *(Lane 2 only)* **`WORKTREES.md`** in this skill folder — parallel-build rules and the static-vs-runtime split.
 
 ## Determinism layer (scripts + hooks)
 
@@ -41,7 +94,7 @@ The plugin's `hooks/hooks.json` wires these hooks to run automatically — you d
 
 **Convention:** the orchestrator should **prefer scripts to inline gradle/git/find sequences** for these operations. If you find yourself writing `git worktree add ... -b agent/...` in a tool call, stop and use `bootstrap-worktree.sh` instead.
 
-## Bootstrap (always run first, in order)
+## Bootstrap (both lanes, always run first, in order)
 
 ### 1. Detect the host project
 
@@ -106,7 +159,10 @@ In addition to the matrix, also capture from the host project:
 
 If Tier 3 is unavailable, the scenario phase below skips; the gametest phase carries more weight.
 
-### 2. Set up the run directory (or resume)
+### 2. (Lane 2 only) Set up the run directory (or resume)
+
+Lane 1 skips this step entirely — no run dir, no `state.json`; the branch
+and the PR body are the run record.
 
 Look at `docs/workflow-runs/`. If present, find the next number; create `docs/workflow-runs/NNN-feature-slug/`. If a run dir was passed in by the user (e.g. they're resuming a prior run), use that one and **read its `state.json` first.**
 
@@ -130,21 +186,117 @@ Run `scripts/preflight.sh` (no flags — full remediation mode). It returns a si
 
 The script writes a tempfile (plan-mode probe), kills stuck NeoForge GameTest JVMs, purges `run/gametestserver/`, reports stale `.trees/` worktrees, and reports free disk. The SessionStart hook will already have run a `--check-only` version of this; running it again here gets the *remediation* side-effects (purge + reap), not just detection.
 
-### 4. Pace the run against your remaining session context, not a fixed budget
+### 4. (Lane 2 only) Pace the run against your remaining session context, not a fixed budget
 
 The orchestrator has no reliable token-counting tool. Instead, use **real-time signals** to pace the run:
 
 - **Watch for subagent over-runs.** If a single subagent returns reporting >100k tokens used or >50 tool calls, that's a red flag — the agent ground on something it shouldn't have. Spawn a focused researcher to unblock instead of re-spawning the same agent. The `SubagentStop` hook tracks this for you in `{RUN_DIR}/subagent-log.jsonl` — `tail` it between phases for a quick heartbeat.
 - **Watch your own context window.** When you, the orchestrator, find yourself reading large files repeatedly, consuming long subagent return summaries, or noticing the harness warning about context, *stop adding new phases* and instead checkpoint state cleanly so the user can resume in a fresh session.
-- **Default scope per session: ONE phase boundary's worth of work.** A typical /mc-mod-develop run = one PR. Don't try to chain 3 PRs in one session — even if they're scoped as 3 separate runs, each gets its own session. The state.json's `parent_run_id` field exists for exactly this stacking.
+- **Default scope per session: ONE phase boundary's worth of work.** A typical Lane 2 run = one PR. Don't try to chain 3 PRs in one session — even if they're scoped as 3 separate runs, each gets its own session. The state.json's `parent_run_id` field exists for exactly this stacking.
 
 When you decide to stop mid-run for context reasons, write a clean handoff to `{RUN_DIR}/handoff.md`:
 - Current `state.json.current_phase`
 - What was completed
-- The exact next command to resume (`/mc-mod-develop` invocation with run dir path)
+- The exact next command to resume (`/modsmith:develop` invocation with run dir path)
 - Any in-flight subagent IDs (so the next session can `SendMessage` them if needed)
 
 **Old strict-budget code removed.** Previous versions tracked `state.json.context_stats.budget_tokens` and warned at 80%; in practice the orchestrator can't measure used tokens reliably and the warning fired too late to help. Replaced with the heuristic-based pacing above.
+
+# Lane 1 — the default loop
+
+You do the work yourself. Spawn a subagent only when a bounded piece is
+genuinely delegable (e.g. `modsmith-gametest-author` for a batch of tests
+on a surface you've already fixed) — never as ceremony.
+
+1. **Branch** from the default branch: `fix/<slug>` or `feat/<slug>`. One
+   coherent change per branch.
+2. **Red first.** For a bug: write the test that reproduces it at the
+   cheapest tier that can express it, and watch it fail with the failure
+   you predicted — a red run that fails for the *predicted reason* is the
+   evidence the test pins the bug. For a feature: acceptance tests
+   alongside the code is fine; red-first where the surface allows.
+   **Verify the premise first** when the fix traces to a documented
+   "known gap" or landmine entry: probe or red-test the claim before
+   writing production code — documented reasoning goes stale even within
+   one MC version.
+3. **Fix / build.** Follow host conventions and the multi-loader scope
+   rules (common vs per-loader — same rules as `agents/builder.md`).
+   Extract decision logic into pure functions where that makes Tier-1
+   coverage possible — that pattern compounds.
+4. **Gate.** Run the project's full pre-merge gate (`integrationCheck`,
+   `check`, or per-target `:loader:check` + `runGameTestServer` in
+   multiloader repos; run `scripts/doctor.sh` when the change touches
+   loader plumbing). Flaky-looking failure? Re-run before believing it;
+   if it IS flaky and load-bearing, root-cause it now or file it
+   visibly — never normalize a red gate.
+5. **Version bump** per host convention, assigned at merge time from the
+   default branch's current stream — never at plan time. Assert new !=
+   old.
+6. **PR.** You own the body: what broke and the failure scenario, what
+   changed, red→green evidence, behavior changes a reviewer should
+   eyeball, known gaps, and a mandatory **"Deviations / Surprises"**
+   section — the plan-vs-reality confession is the highest-signal
+   artifact in the field record. **The PR is the checkpoint. Never merge
+   it yourself; never push the default branch.**
+7. **Iterating on an open PR**: fix on the same branch; after any push
+   that adds commits, refresh the PR title/body to describe the whole
+   branch as it now stands.
+
+No run dir, no `state.json`, no handoff files. If the session dies, the
+branch + PR (or the diff on disk) carry the state.
+
+**Escalation guard (applies to you too):** >25 tool calls or >50k tokens
+on one non-critical-path investigation — stop, grep
+`references/landmines.md`, probe with `scripts/symbol-check.sh`, or spawn
+ONE focused researcher. Don't grind.
+
+## Evidence rules (Lane 1)
+
+Distilled from the archived-run record — the failure classes no compile
+gate catches:
+
+- **Runtime semantics need runtime evidence.** The costliest field bugs
+  all compiled clean: hooks that never fire, silently-degraded calls,
+  patch-gated vanilla paths. Any claim of the form "vanilla hook X fires
+  for entity/path Y" must cite the decompiled source (file:line) or ship
+  a GameTest through the REAL trigger path in the same PR. An API spike
+  that only compiles is not a spike — log actual returned values.
+- **Visual surfaces need a visual pass.** New/changed item, block,
+  screen, or renderer → `runClient`, hold it / place it / open it,
+  before the PR. No compile gate or headless GameTest sees an invisible
+  item.
+- **A validation item counts only if automated or executed with recorded
+  output.** Anything else is labeled UNVERIFIED in the PR body.
+  (Unexecuted manual test scripts map 1:1 to post-approval bugs in the
+  field record.)
+- **Artifact citations, not confidence percentages.** Claims about
+  vanilla assets, API behavior, or the host codebase cite a jar listing,
+  decompiled file:line, or repo grep — or are labeled speculation.
+- **Risk note for unverified API surfaces**: a few lines in the first
+  commit — risk, detection command, pre-authorized fallback. A risk
+  without a detection command and fallback is a wish.
+- **Feed the landmine index in the same PR**: any bug whose fix cites
+  decompiled source gets a `references/landmines.md` entry before merge.
+- **No orphan pitfalls**: every research pitfall and DoD/checklist item
+  traces to an implementation step, an automated check, or an explicit
+  one-line rejection.
+- A review verdict (yours or an agent's) **records the reviewed SHA**;
+  if HEAD moves before merge, append a delta note or re-review the diff.
+
+## Stacked PRs under squash-merge (both lanes)
+
+Avoid stacking when a sequential pair of PRs would do. When you do stack:
+declare merge order in BOTH bodies; merge bottom-first (enable
+"Automatically delete head branches" so children auto-retarget); after a
+parent squash-merges, immediately rebase each child onto the default
+branch dropping the squashed commits, and verify the resulting tree is
+byte-identical to the tested one before force-pushing.
+
+---
+
+# Lane 2 — orchestrated decomposition (opt-in)
+
+Everything from here to the end of this file is Lane 2's machine.
 
 ## Phase sequence
 
@@ -191,7 +343,7 @@ Already documented in the **Bootstrap (always run first, in order)** section abo
 
 **Skip** when the task is obviously single-subtask (one bug fix, a small feature in one subsystem) or the user explicitly says "no decomposition". Otherwise default to running it.
 
-Spawn `mc-mod-architect` with:
+Spawn `modsmith-architect` with:
 - The user's task verbatim.
 - The path to the run dir.
 - An instruction to write its decomposition to `{RUN_DIR}/architect.json` per the architect's documented schema.
@@ -241,7 +393,7 @@ Output: `{RUN_DIR}/plan.md`. Review yourself; if it presents options, choose the
 
 This is where parallelism happens. For each `parallel_group` in `architect.json`, in order:
 
-1. **If group size == 1**: run a single `mc-mod-builder` subagent serially on the run's feature branch (`feature/run-NNN-slug`). No worktree.
+1. **If group size == 1**: run a single `modsmith-builder` subagent serially on the run's feature branch (`feature/run-NNN-slug`). No worktree.
 2. **If group size > 1**: bootstrap one worktree per subtask using `scripts/bootstrap-worktree.sh <subtask_id> <base>` (idempotent — safe to re-run on resume). Spawn one builder per worktree **in parallel** (multiple Agent calls in the same message). Wait for all to return. For each, mark the work_item complete or failed. Then merge each successful branch via `scripts/merge-worktree.sh <subtask_id> <feature_branch>`; on `status=conflict` halt and surface to the user (don't auto-resolve — see WORKTREES.md).
 3. After every group: run `./gradlew integrationCheck` once on the feature branch. If it fails, increment `iteration_counts.build_attempts`. Up to **3 attempts** before escalating to the user.
 
@@ -770,7 +922,7 @@ When the decision is "kick back":
 
    Persist `state.json` (atomic write) *before* spawning the builder. If the builder run dies, resume reads the history entry and knows to pick up mid-round.
 
-2. **Spawn the builder.** Prefer the `Task` tool with `subagent_type: "builder"`. Fall back to `Agent(subagent_type: "general-purpose")` with the `agents/builder.md` body inlined (same fallback pattern as Phase 6's background spawn — see "Custom subagent fallback" at the end of this skill).
+2. **Spawn the builder.** Prefer the `Task` tool with `subagent_type: "modsmith-builder"`. Fall back to `Agent(subagent_type: "general-purpose")` with the `agents/builder.md` body inlined (same fallback pattern as Phase 6's background spawn — see "Custom subagent fallback" at the end of this skill).
 
    The builder prompt MUST include:
 
@@ -896,18 +1048,19 @@ After PR creation/refresh: update `state.json.pr` and set `current_phase = "comp
 - Spawn subagents with concrete, well-scoped prompts.
 - Schedule parallel groups per `architect.json`.
 - Bootstrap and merge worktrees per `WORKTREES.md`.
-- Track context budget; warn at 80%.
+- Pace the run via the real-time signals in Bootstrap step 4 (no token
+  budget exists — watch subagent over-runs and your own context).
 - Surface architect's `open_questions` to the user when they block decomposition.
 - Decide between options when subagents surface them; pick the simpler one.
 - Decide when to stop iterating.
 - Write the final PR body.
 
 **You don't:**
-- Decompose tasks (that's `mc-mod-architect`).
-- Write code (that's `mc-mod-builder`).
-- Write tests (that's `mc-gametest-author` / `mc-scenario-author`).
-- Run scenarios (that's `mc-scenario-runner`).
-- Diagnose failures (that's `mc-scenario-analyzer`).
+- Decompose tasks (that's `modsmith-architect`).
+- Write code (that's `modsmith-builder`).
+- Write tests (that's `modsmith-gametest-author` / `modsmith-scenario-author`).
+- Run scenarios (that's `modsmith-scenario-runner`).
+- Diagnose failures (that's `modsmith-scenario-analyzer`).
 
 If you notice yourself doing any of those, spawn the right subagent.
 
@@ -932,14 +1085,14 @@ When `current_phase == "complete"`, summarize to the user (≤ 200 words):
 - Subtask count and parallel groups used.
 - What the run dir contains (`architect.json`, `research.md`, `plan.md`, `build-log.md`, `review.md`).
 - Which scenarios validated it.
-- Final budget: tokens used vs. budget, cost estimate.
+- Notable subagent over-runs, if any (from `subagent-log.jsonl`).
 - Any optional polish items the analyzer or reviewer flagged but you didn't ship.
 
 ## Inline vs. headless invocation
 
 This skill works the same whether you (the orchestrator) are running directly in the user's conversation or were spawned from a parent agent's `Agent` tool call. The contract:
 
-- **Inline** (default, easier to interject): the user invoked the skill directly. The orchestrator can ask the user for clarification mid-run (`AskUserQuestion`) when architect's `open_questions` blocks progress or budget warning fires.
+- **Inline** (default, easier to interject): the user invoked the skill directly. The orchestrator can ask the user for clarification mid-run (`AskUserQuestion`) when architect's `open_questions` blocks progress or context pressure forces an early checkpoint.
 - **Headless** (parent agent): a higher-level orchestrator spawned this run. Don't `AskUserQuestion`; instead pause the run by setting `current_phase` to a halted state and writing the questions to `state.json.last_error` plus `{RUN_DIR}/blocked.md`. The parent agent surfaces it to the user.
 
 The state machine is identical in both modes. Resume protocol via `state.json` is identical. The only difference is *where* the questions get surfaced.
@@ -958,7 +1111,7 @@ If you (the orchestrator) spawn one and get `Agent type '<name>' not found`, fal
 
 If even the canonical agent file is missing (degraded environment), use the **inline fallback specs below**. They're tighter than the full files but sufficient for the role contract.
 
-### Inline fallback: mc-mod-architect
+### Inline fallback: modsmith-architect
 
 ```
 You are the architect for a Minecraft mod feature task. Decompose the user's task
@@ -990,13 +1143,13 @@ Return summary ≤200 words: subtask count, parallel groups, any open questions.
 Don't repeat the JSON.
 ```
 
-### Inline fallback: mc-mod-builder
+### Inline fallback: modsmith-builder
 
 ```
 You are an implementer for a Minecraft mod feature subtask. Read the host project's
 CLAUDE.md, build.gradle, and gradle.properties first.
 
-Idempotency contract (when invoked from /mc-mod-develop):
+Idempotency contract (when invoked from /modsmith:develop Lane 2):
 - The orchestrator passes work_unit_key, worktree_path, subtask_id.
 - cd into worktree_path before any tool calls.
 - If the worktree already has commits matching [work_unit_key], treat the subtask
@@ -1032,7 +1185,7 @@ Commit on completion with a message starting with the conventional prefix
 Return summary ≤200 words: what you built, files changed, validation results.
 ```
 
-### Inline fallback: mc-gametest-author
+### Inline fallback: modsmith-gametest-author
 
 See the plugin's `agents/gametest-author.md` — the full determinism checklist + spec-first principle is too long to inline. If that file is missing, the absolute minimum for the role contract:
 
@@ -1048,4 +1201,4 @@ See the plugin's `agents/gametest-author.md` — the full determinism checklist 
 - **researcher**: read the host project + cited docs, produce a structured report. Don't iterate; one document and exit.
 - **planner**: take research + architect output, produce an implementation plan. Pick options for the orchestrator; flag trade-offs.
 - **reviewer**: holistic review of merged work — code quality, test coverage, design coherence. Output a verdict + score.
-- **mc-scenario-author / mc-scenario-runner / mc-scenario-analyzer**: only relevant if host project has Tier-3 scenario harness (`./gradlew runScenarioServer` or similar). Skip the scenario phase if the harness is absent.
+- **modsmith-scenario-author / modsmith-scenario-runner / modsmith-scenario-analyzer**: only relevant if host project has Tier-3 scenario harness (`./gradlew runScenarioServer` or similar). Skip the scenario phase if the harness is absent.

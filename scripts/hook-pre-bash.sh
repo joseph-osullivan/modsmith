@@ -11,6 +11,11 @@ DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Read stdin, extract command. Use jq if available; fall back to grep.
 INPUT=$(cat)
+
+# Double-fire guard: personal skill copy wins if wired (see hook-session-start.sh).
+if grep -qs 'mc-mod-develop/scripts/hook-' "$HOME/.claude/settings.json" 2>/dev/null; then
+  exit 0
+fi
 CMD=""
 if command -v jq >/dev/null 2>&1; then
   CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)

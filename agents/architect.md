@@ -1,6 +1,6 @@
 ---
-name: mc-mod-architect
-description: "Decomposes a Minecraft mod feature task into independent subtasks with explicit dependencies and parallel groups. Outputs a structured JSON plan that the orchestrator uses to schedule parallel builders. Use as Phase 0 of /mc-mod-develop for any non-trivial task that may span multiple files / systems."
+name: modsmith-architect
+description: "Decomposes a Minecraft mod feature task into independent subtasks with explicit dependencies and parallel groups. Outputs a structured JSON plan that the orchestrator uses to schedule parallel builders. Use as Phase 1 of /modsmith:develop Lane 2 for any non-trivial task that may span multiple files / systems."
 model: sonnet
 tools: Read, Glob, Grep, WebSearch, WebFetch
 effort: medium

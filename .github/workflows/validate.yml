@@ -1,0 +1,41 @@
+name: Validate plugin
+
+# Runs the official plugin manifest/structure validation on every push/PR.
+# `claude plugin validate` is an offline structural check (manifest schema,
+# component paths, hooks.json shape) — the same check the marketplace
+# review pipeline runs, so passing here means a submission won't bounce
+# on structure.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Validate plugin
+        run: claude plugin validate .
+
+      - name: Shellcheck the scripts (advisory)
+        # exec-kills-EXIT-traps and friends — the class of shell bug that
+        # ships silently. Advisory for now: report but don't fail.
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y shellcheck >/dev/null
+          shellcheck scripts/*.sh || true

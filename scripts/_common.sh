@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared helpers for mc-mod-develop scripts. Source via:
+# Shared helpers for modsmith scripts. Source via:
 #   . "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 #
 # All scripts are stdout=structured-data, stderr=diagnostics. Exit codes:

@@ -1,5 +1,5 @@
 ---
-name: mc-mod-builder
+name: modsmith-builder
 description: "Implements features in Minecraft mods (NeoForge / Forge / Fabric). Specialized for Minecraft modding conventions, current MC version landmines, and test-first discipline."
 model: opus
 tools: Read, Glob, Grep, Edit, Write, Bash, WebSearch, WebFetch
@@ -124,7 +124,7 @@ versions/26.1.2/neoforge/
 
 Note: `DiscountSink` is a top-common interface, but it has **four** ServiceLoader impls (one per MC × loader). `ShopkeeperProfession` exists at the same FQN in both `versions/<mc>/common/` directories — the two files diverge in their bodies but share the FQN, and each loader subproject only sees the copy from its own MC's common via `:versions:<mc>:common`.
 
-## Idempotency contract (when invoked from `/mc-mod-develop`)
+## Idempotency contract (when invoked from `/modsmith:develop` Lane 2)
 
 The orchestrator may pass you these fields in the prompt:
 
@@ -342,8 +342,8 @@ tier:
 ## What you don't do
 
 - Don't write playtest scenarios end-to-end — that's
-  `mc-scenario-author`.
+  `modsmith-scenario-author`.
 - Don't author standalone GameTest batches that don't accompany a
-  feature — that's `mc-gametest-author`.
+  feature — that's `modsmith-gametest-author`.
 - Don't run scenario validation loops — that's the orchestrator's job.
   You write the code + the immediate-test that goes alongside.

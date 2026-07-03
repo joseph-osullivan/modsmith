@@ -3,12 +3,17 @@
 # subagent-log.jsonl so the orchestrator can detect over-grinding agents
 # without re-reading transcripts. Silent on success.
 #
-# Wired in ~/.claude/settings.json under hooks.SubagentStop.
+# Wired via the plugin's hooks/hooks.json (CLAUDE_PLUGIN_ROOT-relative).
 
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/_common.sh"
 
 INPUT=$(cat)
+
+# Double-fire guard: personal skill copy wins if wired (see hook-session-start.sh).
+if grep -qs 'mc-mod-develop/scripts/hook-' "$HOME/.claude/settings.json" 2>/dev/null; then
+  exit 0
+fi
 
 if ! is_mc_mod_repo; then
   exit 0

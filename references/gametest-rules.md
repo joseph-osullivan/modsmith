@@ -261,6 +261,44 @@ default. The only place you'd skip it is a fast local debug iteration
 where you've already warmed the JVM. **Never report a "flake" without
 having run with `--warmup`.**
 
+## Rule 8: Arena isolation — cells share one world
+
+The GameTest framework **never clears finished tests' entities or
+structures**. The arena accumulates across the whole server run, and
+batch grids pack cells within ~12–40 blocks of each other. Anything with
+global reach crosses cells: vanilla `AcquirePoi` scans beds/job sites to
+48 blocks; mod sweeps that iterate `getAllEntities()` convert or claim
+whatever lingers from an earlier test.
+
+Consequences, each field-verified:
+
+- **Contested-global-state tests get a solo batch.** Batching is keyed on
+  the test_environment holder — a distinct
+  `data/<ns>/test_environment/<name>.json` = a sequential, solo batch.
+  Pair it with a `minecraft:function` setup mcfunction that kills
+  lingering candidate entities, and air-out your own bait blocks on the
+  success path.
+- **But environment batches are NOT a cold-start fix** — a fresh grid
+  races chunk promotion from tick 0 and makes cold-start strictly worse
+  (tried, reverted). Use them only for global-state isolation.
+- **A cell can sit below entity-ticking level for an entire run**
+  (`tickCount=0` at tick 602 on a 2-core CI runner). Fixed-tick asserts
+  against entity state are races; bounded polls only cover
+  index-visibility waits. The terminal fix for entity-tick-dependent
+  tests: the poll drives `entity.tick()` itself — real
+  `aiStep`/`customServerAiStep` runs deterministically, live cells just
+  double-tick, `>=` gates absorb it.
+- **Any test-count change reshuffles the alphabetical grid** — cold edge
+  cells re-roll, so one-shot asserts anywhere in the suite can start
+  flaking after an unrelated test is added. Never trust "passed 10×"
+  across a test-count change; include a fresh N-run soak in any PR that
+  changes the count.
+- **Flake triage starts with a control run** at a commit with a
+  documented green streak. If that also fails, indict the environment
+  (parallel JVMs, chunk-promotion starvation), not the code.
+- **Assert the contract, not the coordinates**, when ambient world
+  content can legally satisfy the mechanic.
+
 ## Sub-rules / corollaries
 
 - **Template references must exist.** `/modsmith:doctor` validates that
