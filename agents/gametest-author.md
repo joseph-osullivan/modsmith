@@ -209,15 +209,15 @@ Behave as before. Tests live wherever the host project already keeps them (typic
 
 ## Determinism checklist (mandatory for every test you write)
 
-These rules prevent the recurring flake patterns that have bitten this skill before. Every test you write MUST follow them. Source: research at `docs/proposals/run-024-deterministic-gametest-research.md` (2026 NeoForge + Anthropic agent best practices).
+These rules prevent the recurring flake patterns that have bitten this skill before. Every test you write MUST follow them. Source: field research across many GameTest-heavy runs (2026 NeoForge + Anthropic agent best practices).
 
 ### Entity assertions
 
 1. **Filter every `getEntitiesOfClass` query by a stable predicate** — typically captured UUID, occasionally custom name. Bare AABB + class scans catch entities from neighboring test cells when the test grid grows.
    ```java
    UUID id = entity.getUUID();
-   List<Captain> matches = helper.getLevel().getEntitiesOfClass(
-       Captain.class, helper.getBounds(),
+   List<Shopkeeper> matches = helper.getLevel().getEntitiesOfClass(
+       Shopkeeper.class, helper.getBounds(),
        e -> id.equals(e.getUUID()));
    ```
 2. **Bound the AABB to `helper.getBounds()`** for the test's structure cell — not arbitrary `inflate(N)`. The framework auto-sizes structure templates; arbitrary inflates cross cell boundaries.
@@ -231,11 +231,11 @@ These rules prevent the recurring flake patterns that have bitten this skill bef
 7. **`max_ticks` must comfortably exceed any `runAfterDelay` total** — bump to 10 for tests that defer their assertions.
 8. **Never use `@GameTest(attempts=N, requiredSuccesses=M)` retries** — that's a smell, not a fix. Eliminate the flake's root cause instead. The only legitimate use is genuine random elements (mob pathfinding); flag and ask before using.
 
-### SavedData / Village fixtures
+### SavedData fixtures
 
-9. **Use unique UUIDs per test** for villageId / lordId / etc. — collisions across tests pollute SavedData. A namespace pattern is fine: `UUID.nameUUIDFromBytes("MyTestClass_myTestName".getBytes())`.
+9. **Use unique UUIDs per test** for any SavedData-keyed ids (shop ids, owner ids, etc.) — collisions across tests pollute SavedData. A namespace pattern is fine: `UUID.nameUUIDFromBytes("MyTestClass_myTestName".getBytes())`.
 10. **Always call `setDirty()` after SavedData mutations** — without it, changes vanish on shutdown.
-11. **Resolve VillageSavedData via the Overworld ServerLevel only**: `helper.getLevel().getServer().getLevel(Level.OVERWORLD)`. The mod's SavedData lives only there.
+11. **Resolve global SavedData via the level that owns it** — mods commonly register world-global SavedData on the Overworld ServerLevel only: `helper.getLevel().getServer().getLevel(Level.OVERWORLD)`, not whatever level the test cell happens to be in.
 12. **Cleanup SavedData entries in a `finally` block** so a failing assertion doesn't leak fixture state into the next test in the batch.
 13. **Guard NBT reads with `tag.contains("field")`** in legacy-save scenarios so old saves load cleanly.
 
@@ -280,11 +280,11 @@ When you write a test:
 ### Anti-pattern: code-first
 
 ```java
-// You read xpForVictim, see it returns 1 for `instanceof Monster`,
+// You read xpForKill, see it returns 1 for `instanceof Monster`,
 // write a test asserting that. Test passes. The bug — Phantom and
 // Slime are hostile but NOT Monster — never gets caught.
 helper.spawn(EntityType.ZOMBIE, ...);
-assert xpForVictim(zombie, soldier) == 1;  // pins the bug
+assert xpForKill(zombie, guard) == 1;  // pins the bug
 ```
 
 ### Correct pattern: spec-first
@@ -294,9 +294,9 @@ assert xpForVictim(zombie, soldier) == 1;  // pins the bug
 // interface. Test asserts the spec across categories — Monster
 // subtype (Zombie), FlyingMob (Phantom), Slime. If production only
 // checks `instanceof Monster`, Phantom/Slime fail — flag the bug.
-assert xpForVictim(zombie,  soldier) == 1;  // Monster
-assert xpForVictim(phantom, soldier) == 1;  // FlyingMob+Enemy
-assert xpForVictim(slime,   soldier) == 1;  // Mob+Enemy
+assert xpForKill(zombie,  guard) == 1;  // Monster
+assert xpForKill(phantom, guard) == 1;  // FlyingMob+Enemy
+assert xpForKill(slime,   guard) == 1;  // Mob+Enemy
 ```
 
 ### Smell list — production code patterns to inspect skeptically
@@ -304,9 +304,9 @@ assert xpForVictim(slime,   soldier) == 1;  // Mob+Enemy
 - **A class-hierarchy check** (`instanceof X`) — does it cover ALL the
   cases the spec implies? Does the parent class actually represent
   what the spec calls "hostile" / "valid target" / etc.?
-- **A subtype dispatch chain** (`instanceof Soldier ? ... : instanceof
-  Archer ? ... : null`) — is every relevant subtype represented? In
-  many mods, late-added types (Captain in this one) get omitted from
+- **A subtype dispatch chain** (`instanceof TypeA ? ... : instanceof
+  TypeB ? ... : null`) — is every relevant subtype represented? In
+  many mods, the most recently added subtype gets omitted from
   chains originally written for the older set.
 - **Magic numbers without comments** — what was the design rationale?
   Sometimes vestigial; sometimes load-bearing.
@@ -319,18 +319,22 @@ If you find any of these and the spec says one thing but the code
 does another, **flag the production bug**. Do not write a test that
 pins the buggy behavior.
 
-### Concrete past examples (this mod)
+### Field-observed archetypes
 
-- `GuardTickHandler.onEntityKilledByGuard` had Soldier and Archer
-  branches but no Captain branch. CaptainEntity has full XP
-  infrastructure — the omission was a bug. A code-first test that
-  only used a Soldier killer would have passed and missed it.
-- `xpForVictim` checked `instanceof Monster` for hostile detection.
-  Spec says "any hostile mob"; the right check is `instanceof Enemy`.
-  A code-first test using Zombie would have passed and missed
-  Phantom / Slime / Hoglin.
-- `xpForVictim`'s `homeId` extraction omitted Captain — same Run-018
-  oversight.
+Three real bug shapes from the mods this plugin's rules were distilled
+from (identifiers genericized):
+
+- A kill-credit dispatcher had branches for two guard subtypes but not
+  the third, latest-added one — which had full XP infrastructure. The
+  omission was a bug. A code-first test that only used the oldest
+  subtype as the killer would have passed and missed it.
+- A hostile-detection check used `instanceof Monster`. Spec said "any
+  hostile mob"; the right check is `instanceof Enemy`. A code-first
+  test using Zombie would have passed and missed Phantom / Slime /
+  Hoglin.
+- The same dispatcher's owner-id extraction omitted the newest subtype
+  again — the identical oversight, one release later. Late-added
+  subtypes are a recurring blind spot: test the NEWEST subtype first.
 
 ## Bootstrap reading
 

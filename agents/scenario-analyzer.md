@@ -60,8 +60,8 @@ Behave as before. The `Loader:` field in the bug report can still be filled in (
 
 1. Read the scenario's `tick()` body to understand what the assertion
    actually checks.
-2. From the `details` string, identify the symptom (e.g. "no village
-   resolved by id X" or "captain target was null after 30 ticks").
+2. From the `details` string, identify the symptom (e.g. "no shop
+   resolved by id X" or "entity target was null after 30 ticks").
 3. Trace the production code path that would have made the assertion
    pass. Use `Grep` for the relevant calls.
 4. Look for landmines that match the symptom: `setDirty()` missing on

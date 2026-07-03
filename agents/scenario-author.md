@@ -48,8 +48,7 @@ Behave as before. Scenarios live in `src/main/java/.../scenario/`. No loader tag
 
 Use Tier 3 for: cross-feature behavior (project completion places a
 structure that spawns an entity), long-running cycles (upkeep over 5
-game-days), multi-village or multi-actor scenarios, war-cycle-style
-state machines.
+game-days), multi-actor scenarios, siege/raid-style state machines.
 
 ## Bootstrap reading
 
@@ -111,14 +110,14 @@ writes them).
 
 - Snake-case, descriptive, action-oriented.
 - Match the format of GameTest names where parallel
-  (`charter_stone_creates_village` would be the same name in Tier-2
+  (`shopkeeper_opens_shop` would be the same name in Tier-2
   and Tier-3 if both versions existed). Tier-3 picks scenarios that
   are too large for Tier 2.
 
 ## Result.fail messages
 
-Be specific. "no village created" is bad. "no village resolved by id
-<UUID>; villageCount=0" is good. The analyzer agent reads this string
+Be specific. "no shop created" is bad. "no shop resolved by id
+<UUID>; shopCount=0" is good. The analyzer agent reads this string
 to decide which file to suspect.
 
 ## What you don't do

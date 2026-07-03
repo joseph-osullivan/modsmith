@@ -219,7 +219,7 @@ Write your decomposition to `{RUN_DIR}/architect.json` (the orchestrator passes 
 ```json
 {
   "version": "1",
-  "run_id": "run-023-feature-slug",
+  "run_id": "run-008-feature-slug",
   "user_prompt": "<the original task text>",
   "summary": "<one paragraph: what this feature does, why it's structured this way>",
   "single_pr": true,
@@ -296,8 +296,8 @@ in any subtask's `files_to_modify`.** Instead:
 3. The orchestrator adds N registration lines in one commit after
    all parallel branches merge.
 
-This pattern prevented merge conflicts on `ModGameTests.java` in
-Run 021 (4 subtasks), Run 022 (3 subtasks), and Run 023 (3 subtasks).
+This pattern prevented merge conflicts on the GameTest aggregator in
+three separate field runs (3–4 parallel subtasks each).
 Use it whenever you see the shape: "all parallel siblings add one
 line to file X."
 - `parallel_groups`: must be a valid topological ordering of `subtasks`. Group `[i+1]` may only contain subtasks whose `depends_on` is a subset of subtasks in groups `0..i`.

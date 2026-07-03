@@ -17,7 +17,7 @@ Before doing anything else, read these files in this order:
 
 1. **`CHECKPOINT.md`** in this skill folder — the `state.json` schema you'll be reading and writing.
 2. **`WORKTREES.md`** in this skill folder — parallel-build rules and the static-vs-runtime split.
-3. **`MC_API_LANDMINES.md`** in this skill folder — cross-run index of MC API changes that have burned past runs. Glance at it on bootstrap; consult it whenever a builder reports a "cannot find symbol" error before spawning a researcher.
+3. **`references/landmines.md`** (plugin root) — cross-run index of MC API changes that have burned past runs. Glance at it on bootstrap; consult it whenever a builder reports a "cannot find symbol" error before spawning a researcher.
 4. The host project's **`CLAUDE.md`** — conventions, landmines, test tiers.
 
 ## Determinism layer (scripts + hooks)
@@ -33,7 +33,7 @@ This skill ships a `scripts/` directory of single-purpose shell scripts. **Use t
 | `scripts/check-base-drift.sh <base> <run_start_sha> [<run_dir>]` | Run start AND immediately before final rebase | Manual fetch + diff + overlap reasoning |
 | `scripts/kill-stuck-jvms.sh [--dry-run]` | Anytime cleanup looks needed; SessionStart hook also runs it | `pgrep` + age check + targeted `kill -9` |
 
-Two hooks are also wired in `~/.claude/settings.json` and run automatically — you don't invoke them, but you should know they fire:
+The plugin's `hooks/hooks.json` wires these hooks to run automatically — you don't invoke them, but you should know they fire:
 
 - **SessionStart**: runs `preflight.sh --check-only` + `kill-stuck-jvms.sh` when cwd is an MC mod repo. Output goes to the user transcript as a single line.
 - **PreToolUse on Bash matching `runGameTestServer`**: auto-purges `run/gametestserver/` before the gradle invocation. Means GameTest cleanup is impossible to forget regardless of orchestrator behaviour.
@@ -250,7 +250,7 @@ This is where parallelism happens. For each `parallel_group` in `architect.json`
 - Each worktree has its own `build/` dir; gradle classloader / build cache state stays per-task.
 - File handle leaks from a stuck JVM in one task don't block another's cleanup.
 
-Past failure: Run 024 ran Group 1's 3 parallel subtasks sequentially in the main worktree to "simplify." A later GameTest run inherited file handles + zombie processes that stretched debugging from minutes to nearly an hour. Even for small subtasks, **always use worktrees for parallel groups**.
+Past failure: a field run executed a group's 3 parallel subtasks sequentially in the main worktree to "simplify." A later GameTest run inherited file handles + zombie processes that stretched debugging from minutes to nearly an hour. Even for small subtasks, **always use worktrees for parallel groups**.
 
 Each builder receives:
 - The subtask's `name`, `description`, `acceptance_criteria`, `files_to_modify`/`files_to_create` from `architect.json`.
@@ -264,13 +264,13 @@ Update state after every builder return; the work_item that just completed trans
 
 #### Builder over-grinding — preventive prompt language (mandatory)
 
-The builder agent's `~/.claude/agents/mc-mod-builder.md` body says "stop after >25 tool calls / >50k tokens on one investigation." In practice this rule is ignored when the builder gets fixated on a single API question. The orchestrator must **echo the rule into every builder prompt explicitly**, not rely on the agent body alone:
+The builder agent's body (`agents/builder.md`) says "stop after >25 tool calls / >50k tokens on one investigation." In practice this rule is ignored when the builder gets fixated on a single API question. The orchestrator must **echo the rule into every builder prompt explicitly**, not rely on the agent body alone:
 
 > **Hard escalation rule (read carefully).** If you find yourself going past 25 tool calls or 50k tokens on any single investigation that isn't critical-path code (e.g. researching an MC API rename, debugging a class-not-found error in your dev environment), STOP IMMEDIATELY. Return a structured blocker report — current state of the work, the specific question you're stuck on, what you've tried — and let the orchestrator route a focused researcher. Don't try to power through; you'll cost the run several PRs of context.
 
-Past failure: Run 024 task-4 ground 121 tool calls / 150k tokens debugging an MC 26.1 API rename (`getSharedSpawnPos` → `getLevelData().getRespawnData().pos()`) when a focused researcher would have resolved it in <10k. **That rename is now in `MC_API_LANDMINES.md`** — before spawning a researcher for any "cannot find symbol" / class-not-found error in vendor MC code, grep that file first.
+Past failure: a field-run builder ground 121 tool calls / 150k tokens debugging an MC 26.1 API rename (`getSharedSpawnPos` → `getLevelData().getRespawnData().pos()`) when a focused researcher would have resolved it in <10k. **That rename is now in `references/landmines.md`** — before spawning a researcher for any "cannot find symbol" / class-not-found error in vendor MC code, grep that file first.
 
-When research resolves a previously-unknown rename, **append the answer to `MC_API_LANDMINES.md`** so the next run gets it for free.
+When research resolves a previously-unknown rename, **append the answer to `references/landmines.md`** so the next run gets it for free.
 
 #### Builder escalation sub-loop
 
@@ -948,11 +948,11 @@ The state machine is identical in both modes. Resume protocol via `state.json` i
 
 ## Custom subagent fallback
 
-The Agent tool's `subagent_type` registry varies by Claude Code session. The named agents this skill references (`mc-mod-architect`, `mc-mod-builder`, `mc-gametest-author`, `mc-scenario-author`, `mc-scenario-runner`, `mc-scenario-analyzer`) live as separate files at `~/.claude/agents/<name>.md` — **but they may not be loaded into this session's registry.**
+The Agent tool's `subagent_type` registry varies by Claude Code session. The named agents this skill references live as separate files in the plugin's `agents/` directory — **but they may not be loaded into this session's registry.**
 
-If you (the orchestrator) try `Agent(subagent_type: "mc-mod-architect", ...)` and get `Agent type 'mc-mod-architect' not found`, fall back as follows:
+If you (the orchestrator) spawn one and get `Agent type '<name>' not found`, fall back as follows:
 
-1. **Read the canonical agent file** from `~/.claude/agents/mc-mod-<role>.md` — its body is the full spec.
+1. **Read the canonical agent file** from the plugin's `agents/<role>.md` — its body is the full spec.
 2. **Spawn `general-purpose`** with the agent file's body inlined as the role instructions, plus your specific task. Skip the YAML frontmatter; everything below it is the prompt.
 3. **The role contract is identical** — the agent file's tools whitelist and effort settings don't transfer to `general-purpose`, but the role definition + your specific task is enough for the work.
 
@@ -1034,7 +1034,7 @@ Return summary ≤200 words: what you built, files changed, validation results.
 
 ### Inline fallback: mc-gametest-author
 
-See `~/.claude/agents/mc-gametest-author.md` — the full determinism checklist + spec-first principle is too long to inline. If that file is missing, the absolute minimum for the role contract:
+See the plugin's `agents/gametest-author.md` — the full determinism checklist + spec-first principle is too long to inline. If that file is missing, the absolute minimum for the role contract:
 
 - Tests assert what the code SHOULD do (per CLAUDE.md / proposal docs), not what it currently does.
 - All entity AABB queries filter by captured UUID or stable predicate. Use `helper.getBounds()`, not arbitrary inflate.
