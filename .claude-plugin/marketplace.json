@@ -1,0 +1,29 @@
+{
+  "name": "modsmith",
+  "owner": {
+    "name": "Joseph O'Sullivan"
+  },
+  "description": "Self-hosted marketplace for the modsmith plugin: AI-first Minecraft mod development as a Claude Code plugin.",
+  "plugins": [
+    {
+      "name": "modsmith",
+      "source": "./",
+      "description": "AI-first Minecraft mod development: multi-loader (Fabric + NeoForge) and multi-MC-version scaffolding, dev loop, gametest, and review.",
+      "author": {
+        "name": "Joseph O'Sullivan"
+      },
+      "homepage": "https://github.com/joseph-osullivan/modsmith",
+      "repository": "https://github.com/joseph-osullivan/modsmith",
+      "license": "MIT",
+      "keywords": [
+        "minecraft",
+        "neoforge",
+        "fabric",
+        "modding",
+        "gradle",
+        "multi-loader"
+      ],
+      "category": "development"
+    }
+  ]
+}
