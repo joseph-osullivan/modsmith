@@ -23,9 +23,14 @@ emit_json() {
 }
 
 # True if cwd looks like a Minecraft mod project (NeoForge / Forge / Fabric).
-# Detects by reading gradle.properties for a minecraft_version key.
+# Detects by reading gradle.properties for an MC version key. The canonical
+# key is `minecraft_version`; older scaffolds wrote `mc_version`, and older
+# multi-MC scaffolds only wrote per-MC suffixed keys (e.g. `mc_version_1_21_1`,
+# digits and underscores). Accept all three shapes. The digit-led suffix rule
+# keeps unrelated keys like `mc_version_range` from matching.
 is_mc_mod_repo() {
-  [ -f gradle.properties ] && grep -q '^minecraft_version=' gradle.properties
+  [ -f gradle.properties ] \
+    && grep -qE '^[[:space:]]*(minecraft_version|mc_version(_[0-9][0-9_]*)?)[[:space:]]*=' gradle.properties
 }
 
 # Resolve the repo root from cwd (works inside worktrees).
