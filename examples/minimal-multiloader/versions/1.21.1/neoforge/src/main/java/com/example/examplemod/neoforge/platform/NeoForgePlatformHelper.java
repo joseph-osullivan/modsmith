@@ -18,6 +18,10 @@ public final class NeoForgePlatformHelper implements IPlatformHelper {
 
     @Override
     public boolean isDevelopmentEnvironment() {
-        return !FMLLoader.getCurrent().isProduction();
+
+
+        // NeoForge 21.x FML: static API (getCurrent() does not exist yet).
+        return !FMLLoader.isProduction();
+
     }
 }

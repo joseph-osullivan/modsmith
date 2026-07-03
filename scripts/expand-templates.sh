@@ -301,8 +301,9 @@ render_multimc() {
     # context (modid, package_base, mod_name, etc.), so the Java +
     # manifest templates that reference {{modid}}, {{package_base}},
     # {{mc_version}}, {{neoforge_version}}, etc. resolve cleanly.
+    # Trailing Xs only — BSD mktemp treats a suffixed template literally.
     local inner_ctx
-    inner_ctx=$(mktemp /tmp/modsmith-mc-ctx.XXXXXX.json)
+    inner_ctx=$(mktemp /tmp/modsmith-mc-ctx.XXXXXX)
 
     jq --argjson idx "$i" '
       .mc_versions[$idx] as $row

@@ -64,6 +64,14 @@ def _derive(ctx: dict) -> dict:
             ctx["is_unobfuscated"] = mc_major >= 26
         if "fml_has_getcurrent" not in ctx:
             ctx["fml_has_getcurrent"] = mc_major >= 26
+    if "primary_mc_version" not in ctx:
+        # Mirrors the translator: first mc_versions row's mc_version, written
+        # into gradle.properties as `minecraft_version=` for repo detection.
+        rows = ctx.get("mc_versions")
+        if isinstance(rows, list) and rows and isinstance(rows[0], dict) and rows[0].get("mc_version"):
+            ctx["primary_mc_version"] = rows[0]["mc_version"]
+        elif ctx.get("mc_version"):
+            ctx["primary_mc_version"] = ctx["mc_version"]
     if "java_version_daemon" not in ctx:
         # The JVM that RUNS Gradle must satisfy the Loom/MDG plugin jars'
         # >= 21 runtime constraint, whatever the compile toolchains are.

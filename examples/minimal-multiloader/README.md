@@ -59,7 +59,7 @@ To re-render from the current templates (after editing modsmith):
 # From the modsmith repo root:
 rm -rf examples/minimal-multiloader
 bash scripts/expand-templates.sh \
-  --vars docs/example-vars.json \
+  --vars examples/minimal-multiloader.vars.json \
   --out examples/minimal-multiloader
 ```
 

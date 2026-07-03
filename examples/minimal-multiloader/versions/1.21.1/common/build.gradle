@@ -77,7 +77,7 @@ processResources {
         'fabric_loader_version'        : project.findProperty('fabric_loader_version_1_21_1'),
         'fabric_api_version'           : project.findProperty('fabric_api_version_1_21_1'),
         'neoforge_version'             : project.findProperty('neoforge_version_1_21_1'),
-        'neoforge_loader_version_range': project.findProperty('neoforge_loader_version_range') ?: '[4,)'
+        'neoforge_loader_version_range': project.findProperty('neoforge_loader_version_range') ?: '[1,)'
     ]
     inputs.properties(expandProps)
     filesMatching(['pack.mcmeta']) {
