@@ -1,0 +1,21 @@
+package {{package_base}}.unit;
+
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+/**
+ * Trivial Tier-1 sample test proving the scaffold's JUnit wiring works.
+ *
+ * <p>Tier-1 tests are pure-JVM unit tests over common code — no Minecraft
+ * bootstrap, no loader runtime. Add real tests beside this one (same source
+ * root, package {{package_base}}.unit) and run them with
+ * {@code ./gradlew :common:test}. Delete this file once real tests exist.
+ */
+class ScaffoldSmokeTest {
+
+    @Test
+    void junitWiringWorks() {
+        assertEquals(4, 2 + 2, "JUnit platform is wired and executing tests");
+    }
+}

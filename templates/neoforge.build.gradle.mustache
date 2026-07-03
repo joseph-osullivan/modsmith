@@ -10,7 +10,7 @@ plugins {
 }
 
 def modid          = project.findProperty('modid')
-def mcVersion      = project.findProperty('mc_version')
+def mcVersion      = project.findProperty('minecraft_version')
 def neoForgeVer    = project.findProperty('neoforge_version')
 def parchmentMc    = project.findProperty('parchment_mc_version')
 def parchmentVer   = project.findProperty('parchment_version')
@@ -43,9 +43,11 @@ tasks.named('sourcesJar', Jar) {
 neoForge {
     version = neoForgeVer
 
-    parchment {
-        minecraftVersion = parchmentMc
-        mappingsVersion  = parchmentVer
+    if (parchmentMc != null && parchmentVer != null) {
+        parchment {
+            minecraftVersion = parchmentMc
+            mappingsVersion  = parchmentVer
+        }
     }
 
     // Pull the AT from :common (single source of truth — see :fabric build

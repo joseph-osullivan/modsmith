@@ -27,9 +27,11 @@ neoForge {
     neoFormVersion = neoFormVer
 
     // Parchment maps parameter names + adds javadocs on top of Mojmap.
-    parchment {
-        minecraftVersion = parchmentMc
-        mappingsVersion  = parchmentVer
+    if (parchmentMc != null && parchmentVer != null) {
+        parchment {
+            minecraftVersion = parchmentMc
+            mappingsVersion  = parchmentVer
+        }
     }
 
     // Pick up the AT if the user authored one. This is the single source of
@@ -47,6 +49,17 @@ dependencies {
     compileOnly         group: 'org.spongepowered',     name: 'mixin',                version: '0.8.5'
     compileOnly         group: 'io.github.llamalad7',   name: 'mixinextras-common',   version: '0.5.3'
     annotationProcessor group: 'io.github.llamalad7',   name: 'mixinextras-common',   version: '0.5.3'
+
+    // Tier-1 unit tests (JUnit 5) — pure-JVM tests over common code, run via
+    // `./gradlew :common:test`. This wiring ships with the scaffold so the
+    // red-first test workflow works out of the box.
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly    'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
 }
 
 // Gradle-side ${var} expansion for resources that benefit from build-time
@@ -58,7 +71,7 @@ processResources {
         'modid'                        : project.findProperty('modid'),
         'mod_name'                     : project.findProperty('mod_name'),
         'mod_version'                  : project.findProperty('mod_version'),
-        'mc_version'                   : project.findProperty('mc_version'),
+        'mc_version'                   : project.findProperty('minecraft_version'),
         'mc_version_range'             : project.findProperty('mc_version_range'),
         'java_version'                 : project.findProperty('java_version'),
         'license'                      : project.findProperty('license'),

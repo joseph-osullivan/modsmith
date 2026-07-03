@@ -1,0 +1,59 @@
+# {{mod_name}} — project conventions
+
+Scaffolded by modsmith. This file records the conventions AI dev workflows
+(and humans) should follow in this repo. Keep it current as the project grows.
+
+## Versions — single source of truth
+
+All Minecraft / loader / tooling versions live in `gradle.properties`.
+**Never** hardcode a version in a subproject build file.
+{{#mc_versions}}
+Per-MC pins use the `<key>_{{mc_suffix}}` suffix scheme for MC {{mc_version}}.
+{{/mc_versions}}
+
+## Build commands
+
+- Full build (all subprojects — the pre-merge gate): `./gradlew build`
+- Unit tests only: `./gradlew :common:test`
+{{^mc_versions}}
+- Per loader: `./gradlew :fabric:build` / `./gradlew :neoforge:build`
+- Dev client: `./gradlew :fabric:runClient` / `./gradlew :neoforge:runClient`
+{{/mc_versions}}
+{{#mc_versions}}
+- Per target for MC {{mc_version}}: `./gradlew :versions:{{mc_version}}:fabric:build` / `./gradlew :versions:{{mc_version}}:neoforge:build`
+- Dev client for MC {{mc_version}}: `./gradlew :versions:{{mc_version}}:fabric:runClient` / `./gradlew :versions:{{mc_version}}:neoforge:runClient`
+{{/mc_versions}}
+
+## Test tiers
+
+- **Tier 1 — JUnit unit tests** (present): pure-JVM tests in
+  `common/src/test/java/{{package_base_path}}/unit/`, run via
+  `./gradlew :common:test`. JUnit 5 wiring ships with the scaffold; a sample
+  test exists at `ScaffoldSmokeTest.java` (delete it once real tests exist).
+- **Tier 2 — GameTests** (not yet set up): in-game server tests. Add
+  infrastructure before claiming runtime behavior is tested.
+- **Tier 3 — manual dev-client verification** (ad hoc): `runClient` targets.
+
+New behavior needs a failing Tier-1 test first whenever the logic is
+JVM-testable; write the test, watch it fail, then implement.
+
+## Version-bump rule
+
+`mod_version` in `gradle.properties` is the mod's version. Bump it on every
+user-visible change before merging: patch for fixes, minor for features.
+Never ship two different builds under the same `mod_version`.
+
+## Layout rules
+
+{{^mc_versions}}
+- `common/` — loader-neutral code only (no `net.fabricmc.*` / `net.neoforged.*` imports).
+- `fabric/`, `neoforge/` — loader-specific implementations of `common` interfaces,
+  registered via `META-INF/services/`.
+{{/mc_versions}}
+{{#mc_versions}}
+- `common/` — pure Java only (no `net.minecraft.*`, `net.fabricmc.*`, or
+  `net.neoforged.*` imports).
+- `versions/{{mc_version}}/common/` — MC-touching shared code for MC {{mc_version}}.
+- `versions/{{mc_version}}/{fabric,neoforge}/` — loader-specific code for MC {{mc_version}},
+  registered via `META-INF/services/`.
+{{/mc_versions}}

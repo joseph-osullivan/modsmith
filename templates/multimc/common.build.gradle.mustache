@@ -12,8 +12,10 @@
 // diverge across versions).
 //
 // Java toolchain: set to `java_version_shared` from gradle.properties,
-// which is the *highest* Java version across the targeted MC lines, so
-// :common bytecode runs cleanly on every MC line's JVM.
+// which is the *lowest* Java version across the targeted MC lines. Every
+// per-MC line consumes :common's bytecode, and an older JVM (e.g. the
+// Java-21 line) cannot load classes built for a newer one (Java 25) —
+// newer JVMs run older bytecode, never the reverse.
 plugins {
     id 'java-library'
 }
@@ -33,6 +35,19 @@ tasks.withType(JavaCompile).configureEach {
 
 base {
     archivesName = "${project.findProperty('modid')}-common"
+}
+
+dependencies {
+    // Tier-1 unit tests (JUnit 5) — pure-JVM tests over common code, run via
+    // `./gradlew :common:test`. This wiring ships with the scaffold so the
+    // red-first test workflow works out of the box.
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly    'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test', Test) {
+    useJUnitPlatform()
 }
 
 // Publish source + resource directories so per-MC subprojects can pull
