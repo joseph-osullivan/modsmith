@@ -249,14 +249,18 @@ Fabric + NeoForge.
 - **`BlockEvent.BreakEvent` → `BreakBlockEvent`.** Top-level event, not nested
   under BlockEvent anymore.
 
-- **`Tier`, `ArmorItem`, `SwordItem`, `TieredItem` deleted.** Use the project's
-  `TierHelper` registry-key map. Modded gear that isn't in the map is ignored
-  by guard tier checks until someone adds data-component-based generalization.
+- **`Tier`, `ArmorItem`, `SwordItem`, `TieredItem` deleted.** If the mod
+  classifies gear by tier, it needs its own registry-key map (or
+  data-component-based generalization); modded gear absent from the map
+  won't be recognized by tier checks.
 
-- **Shield durability via `LivingEntity#hurtCurrentlyUsedShield` no longer
-  reaches non-Player subclasses cleanly** — moved to the `BlocksAttacks`
-  data component. Guard armor durability ships, shield drain is a known gap
-  (see issue #19).
+- **`LivingEntity#hurtCurrentlyUsedShield` is REMOVED in 26.1.** Blocking
+  runs through the `blocks_attacks` data component +
+  `LivingEntity#applyItemBlocking` (component `item_damage`, default 1.5).
+  Note the NeoForge patch gates the durability-drain path behind
+  `instanceof Player` — non-player entities don't drain shields, and
+  `LivingShieldBlockEvent.setShieldDamage` is consumed inside that gate
+  (a no-op for mobs). Verified against patched 26.1.2 sources.
 
 - **`ComponentSerialization.STREAM_CODEC.encode(buf, component)`**, not
   `buf.writeComponent(...)` (latter doesn't exist). Requires a

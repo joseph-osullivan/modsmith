@@ -2,10 +2,10 @@
 # check-base-drift.sh — detect whether the run's base branch has moved out from
 # under us, and whether any drifted commits touch files our run touched.
 #
-# Run-024 was bitten by this: PR #70 merged and a follow-up refactor reorganized
-# packages mid-run; rebase produced 5-file conflicts. The orchestrator can call
-# this at run start AND just before final rebase; if drift is high or overlaps
-# touched files, prompt the user.
+# A field run was bitten by this: an unrelated PR merged mid-run and a
+# follow-up refactor reorganized packages; the final rebase produced 5-file
+# conflicts. The orchestrator can call this at run start AND just before final
+# rebase; if drift is high or overlaps touched files, prompt the user.
 #
 # Usage:
 #   check-base-drift.sh <base_branch> <run_start_sha> [<run_dir>]

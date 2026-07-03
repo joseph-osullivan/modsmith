@@ -9,14 +9,14 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 ```json
 {
   "version": "1",
-  "run_id": "run-023-feature-slug",
+  "run_id": "run-008-feature-slug",
   "created_at": "ISO-8601",
   "updated_at": "ISO-8601",
   "user_prompt": "<verbatim, never edited after run start>",
 
-  "parent_run_id": "run-022-bundle-a-bug-fixes",
-  "base_branch": "feat/run-022-bundle-a",
-  "extends_pr": 79,
+  "parent_run_id": "run-007-earlier-slug",
+  "base_branch": "feat/run-007-earlier",
+  "extends_pr": 42,
 
   "current_phase": "bootstrap | architect | research | plan | build | doctor | handoff | kick_back | pr | complete",
   "completed_phases": ["bootstrap", "architect", "research", "plan"],
@@ -133,7 +133,7 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 
   "scenarios": {
     "status": "skipped | pending | complete",
-    "scenario_ids": ["charter_stone_creates_village"],
+    "scenario_ids": ["shopkeeper_opens_shop"],
     "all_passed": true,
     "iterations_used": 0
   },
@@ -231,9 +231,9 @@ Inspired by LangGraph's checkpoint model: capture metadata + file references, NO
 
   "pr": {
     "status": "pending | complete",
-    "url": "https://github.com/.../pull/76",
-    "number": 76,
-    "branch": "feature/run-023-slug",
+    "url": "https://github.com/.../pull/42",
+    "number": 42,
+    "branch": "feature/run-008-slug",
     "merged": false
   },
 

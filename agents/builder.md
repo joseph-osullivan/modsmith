@@ -175,14 +175,14 @@ absorb the edit into the post-merge step.
 
 If you spend more than ~25 tool calls (or ~50k tokens) on one
 investigation that isn't critical-path for your subtask — e.g.
-"figuring out how MC 26.1's BlocksAttacks data-component works" when
-your task is "drain armor durability" — **stop and escalate**. Don't
+"figuring out how a reworked vanilla data-component behaves" when
+your task only consumes one field of it — **stop and escalate**. Don't
 keep grinding. Return early with:
 
 - a clear statement of what's blocked
 - what you've tried
-- a proposed fallback (e.g. "ship armor-only and defer the shield
-  path to a follow-up")
+- a proposed fallback (e.g. "ship the working half and defer the
+  blocked path to a follow-up")
 - whether you can complete the rest of the subtask without resolving
   this
 
@@ -193,9 +193,9 @@ orchestrator owns the resume — if a researcher finds the answer,
 the orchestrator re-spawns you with the research findings in the
 prompt and you continue from where you stopped.
 
-This rule exists because Run 023's task-3 spent ~196k tokens
-investigating shield blocking before producing useful armor work.
-That's the failure mode this rule prevents.
+This rule exists because a past field run spent ~196k tokens
+investigating a reworked vanilla mechanic before producing any useful
+work on its subtask. That's the failure mode this rule prevents.
 
 ## Static-only validation in parallel groups
 
