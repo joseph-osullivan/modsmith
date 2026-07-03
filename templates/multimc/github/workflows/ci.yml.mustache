@@ -11,47 +11,38 @@ permissions:
 
 jobs:
   build:
-    name: build (${{ matrix.target.mc }} / ${{ matrix.target.loader }})
+    name: build (all MC lines)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-{{#mc_versions}}
-{{#has_fabric}}
-          - mc: "{{mc_version}}"
-            loader: fabric
-            java: "{{java_version}}"
-            subproject: ":versions:{{mc_version}}:fabric"
-{{/has_fabric}}
-{{#has_neoforge}}
-          - mc: "{{mc_version}}"
-            loader: neoforge
-            java: "{{java_version}}"
-            subproject: ":versions:{{mc_version}}:neoforge"
-{{/has_neoforge}}
-{{/mc_versions}}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK ${{ matrix.target.java }}
+      # One JDK is enough: gradle/gradle-daemon-jvm.properties pins the
+      # build JVM, and the per-MC compile toolchains are auto-provisioned
+      # by the foojay resolver at build time.
+      - name: Set up JDK
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ matrix.target.java }}
+          java-version: "{{java_version_daemon}}"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build ${{ matrix.target.mc }} ${{ matrix.target.loader }}
-        run: ./gradlew ${{ matrix.target.subproject }}:build --stacktrace
+      # `./gradlew build` is the pre-merge gate: it compiles, tests
+      # (:common:test — the Tier-1 suite), and assembles EVERY subproject
+      # on every MC line. Per-target builds under-test the scaffold —
+      # they skip the common modules' own jars and tests.
+      - name: Build
+        run: ./gradlew build --stacktrace
 
-      - name: Upload artifacts
+      - name: Upload jars
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: {{modid}}-${{ matrix.target.mc }}-${{ matrix.target.loader }}-jar
-          path: versions/${{ matrix.target.mc }}/${{ matrix.target.loader }}/build/libs/*.jar
+          name: {{modid}}-jars
+          path: |
+            common/build/libs/*.jar
+            versions/*/*/build/libs/*.jar
           if-no-files-found: ignore

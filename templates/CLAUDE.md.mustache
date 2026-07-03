@@ -50,9 +50,11 @@ Never ship two different builds under the same `mod_version`.
 - `fabric/`, `neoforge/` — loader-specific implementations of `common` interfaces,
   registered via `META-INF/services/`.
 {{/mc_versions}}
-{{#mc_versions}}
+{{#java_version_shared}}
 - `common/` — pure Java only (no `net.minecraft.*`, `net.fabricmc.*`, or
   `net.neoforged.*` imports).
+{{/java_version_shared}}
+{{#mc_versions}}
 - `versions/{{mc_version}}/common/` — MC-touching shared code for MC {{mc_version}}.
 - `versions/{{mc_version}}/{fabric,neoforge}/` — loader-specific code for MC {{mc_version}},
   registered via `META-INF/services/`.
