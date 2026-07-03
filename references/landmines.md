@@ -102,21 +102,32 @@ Fabric + NeoForge.
   that does the rewrite. Hand-editing the generated file is a landmine —
   it will be overwritten on the next build.
 
-### `modImplementation` vs `implementation` in Fabric Loom
+### `modImplementation` vs `implementation` in Fabric Loom *(runtime-semantic)*
 
-- **In Fabric Loom, mod dependencies MUST use `modImplementation`
-  (not `implementation`).** `implementation` includes the JAR on the
-  classpath but does NOT run it through Loom's remapper. In dev it
-  appears to work; at runtime in a production JAR the remapped names
+- **On obfuscated MC (< 26), Fabric mod dependencies MUST use
+  `modImplementation` (not `implementation`).** `implementation` includes
+  the JAR on the classpath but does NOT run it through Loom's remapper. In
+  dev it appears to work; at runtime in a production JAR the remapped names
   don't resolve and you get `ClassNotFoundException` / `NoSuchMethodError`.
-- This applies to ALL Fabric API modules, Fabric Loader, and any other
-  mod jar (e.g. Trinkets, Cloth Config).
-- `/modsmith:doctor` greps loader subproject build files and hard-fails on
-  raw `implementation 'net.fabricmc:fabric-api'` or `implementation
-  'net.neoforged:neoforge'`.
-- NeoForge under MDG uses regular `implementation`/`runtimeOnly` —
-  ModDevGradle handles the userdev transform at the plugin level, not the
-  dependency configuration level. The rule here is **Fabric only**.
+  Applies to ALL Fabric API modules, Fabric Loader, and any other mod jar
+  (e.g. Trinkets, Cloth Config).
+- **Corrected 2026-07 — the rule INVERTS on unobfuscated MC 26.x+.** MC 26
+  ships unobfuscated; under Loom's new plugin id (`net.fabricmc.fabric-loom`,
+  no-remap mode) the remap configurations are never registered, so
+  `modImplementation` does not exist ("Could not find method
+  modImplementation()") and plain `implementation` is the ONLY buildable
+  form — and the correct one, since there is nothing to remap.
+  Build-verified 2026-07 on fresh MC 26.2 scaffolds (v0.2.0 gate). Match
+  the dependency form to the plugin id: legacy `fabric-loom` →
+  `modImplementation`; `net.fabricmc.fabric-loom` → `implementation`.
+- `/modsmith:doctor`'s dependency-form check applies to **obfuscated MC
+  lines only**; a flag on raw `implementation` in a 26.x+ no-remap
+  subproject is a false positive — verify against the plugin id before
+  acting on it.
+- NeoForge under MDG uses regular `implementation`/`runtimeOnly` on every
+  MC version — ModDevGradle handles the userdev transform at the plugin
+  level, not the dependency configuration level. The Fabric rule above
+  never applies to NeoForge subprojects.
 
 ### Java toolchain by MC version
 

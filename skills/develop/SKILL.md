@@ -69,7 +69,7 @@ explicit state on disk, never free-form multi-agent choreography.
 Before doing anything else, read these files in this order:
 
 1. **`references/landmines.md`** (plugin root) — cross-run index of MC API changes that have burned past runs. Glance at it on bootstrap; consult it whenever a "cannot find symbol" error appears, before spawning a researcher.
-2. The host project's **`CLAUDE.md`** — conventions, landmines, test tiers.
+2. The host project's **`CLAUDE.md`** — conventions, landmines, test tiers. Fresh modsmith scaffolds ship one. If the host project has none, don't dead-end: take conventions from `agents/builder.md` and `references/`, default the version-bump rule to a patch bump, and note the absence in the PR body.
 3. *(Lane 2 only)* **`CHECKPOINT.md`** in this skill folder — the `state.json` schema you'll be reading and writing.
 4. *(Lane 2 only)* **`WORKTREES.md`** in this skill folder — parallel-build rules and the static-vs-runtime split.
 
@@ -105,13 +105,21 @@ Modsmith supports both **single-loader** repos (one root `build.gradle` applies 
 Resolve the plugin install root and invoke the script:
 
 ```bash
-# CLAUDE_PLUGIN_ROOT is set by Claude Code when the skill executes inside an
-# installed plugin. For locally-linked installs it points at the symlink target
-# (the modsmith repo). If it's unset (legacy / direct skill invocation),
-# fall back to walking up from this SKILL.md.
-MODSMITH_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+# CLAUDE_PLUGIN_ROOT is authoritative — Claude Code sets it when the skill
+# executes inside an installed plugin (for locally-linked installs it points
+# at the symlink target, i.e. the modsmith repo).
+MODSMITH_DIR="$CLAUDE_PLUGIN_ROOT"
 bash "$MODSMITH_DIR/scripts/detect-targets.sh"
 ```
+
+If `CLAUDE_PLUGIN_ROOT` is **unset** (legacy / direct skill invocation), do
+NOT derive the root from `$0` — snippets here run via the Bash tool, where
+`$0` is the shell binary, so a `$(dirname "$0")/..` walk-up resolves to an
+unrelated directory. Instead substitute the plugin checkout path you
+already know (the directory containing this SKILL.md, two levels up), or
+probe upward from the SKILL.md location for the marker file
+`scripts/detect-targets.sh`. If neither works, fail loudly and ask the
+user for the plugin path — never guess.
 
 The script emits a single JSON document with the schema documented in `scripts/detect-targets.sh` and `CHECKPOINT.md` (the `targets` / `layout` fields). Example:
 
@@ -130,7 +138,7 @@ The script emits a single JSON document with the schema documented in `scripts/d
 
 Interpret the script's exit code:
 
-- `exit 0` → at least one target detected. Persist the entire JSON document as the `targets_matrix` field in `state.json` (see CHECKPOINT.md). Use the `targets` array, `common_subproject`, `layout`, and `java_toolchain` fields as first-class context throughout the run.
+- `exit 0` → at least one target detected. **Lane 1:** there is no run dir and no `state.json` — keep the matrix in your working context for the rest of the run (and paste it verbatim into any subagent prompt, per 1b). **Lane 2:** persist the entire JSON document as the `targets_matrix` field in `state.json` (see CHECKPOINT.md). In both lanes, use the `targets` array, `common_subproject`, `layout`, and `java_toolchain` fields as first-class context throughout the run.
 - `exit 1` → `layout == "unknown"` (or `monolith` with no recognized loader plugin). Halt and surface the `detection_notes` to the user — this skill needs a recognizable loader.
 
 #### 1b. Pass the matrix to every downstream agent
@@ -182,7 +190,7 @@ Run `scripts/preflight.sh` (no flags — full remediation mode). It returns a si
 
 - `status=ok` → proceed.
 - `status=blocked reason=plan_mode_or_no_write` → plan mode is active. Halt with: "Plan mode is active — exit and re-invoke."
-- `status=skip reason=not_mc_mod_repo` → cwd doesn't look like an MC mod repo. Confirm with user before continuing.
+- `status=skip reason=not_mc_mod_repo` → cwd doesn't look like an MC mod repo. Interactive: confirm with the user before continuing. Headless (no user to ask): if the repo is *demonstrably* an MC mod repo — `gradle.properties` declares `minecraft_version` (or a loader version), a loader plugin appears in a build file, or loader subprojects exist — record the skip and your evidence in the PR body's Deviations / Surprises section and proceed; otherwise halt.
 
 The script writes a tempfile (plan-mode probe), kills stuck NeoForge GameTest JVMs, purges `run/gametestserver/`, reports stale `.trees/` worktrees, and reports free disk. The SessionStart hook will already have run a `--check-only` version of this; running it again here gets the *remediation* side-effects (purge + reap), not just detection.
 
@@ -223,12 +231,18 @@ on a surface you've already fixed) — never as ceremony.
    rules (common vs per-loader — same rules as `agents/builder.md`).
    Extract decision logic into pure functions where that makes Tier-1
    coverage possible — that pattern compounds.
-4. **Gate.** Run the project's full pre-merge gate (`integrationCheck`,
-   `check`, or per-target `:loader:check` + `runGameTestServer` in
-   multiloader repos; run `scripts/doctor.sh` when the change touches
-   loader plumbing). Flaky-looking failure? Re-run before believing it;
-   if it IS flaky and load-bearing, root-cause it now or file it
-   visibly — never normalize a red gate.
+4. **Gate.** Run the heaviest pre-merge tier the repo actually has —
+   key it on the capabilities captured in Bootstrap 1c, not on a fixed
+   command list: `integrationCheck` if it exists; else `check` +
+   `runGameTestServer` (per-target `:loader:check` in multiloader
+   repos); else plain `check`/`build`. If no GameTest tier exists, say
+   so in the PR body rather than skipping silently. Run
+   `scripts/doctor.sh` when the change touches loader plumbing; doctor
+   `verdict=fail` **blocks the PR** unless each `hard_fail` is verified
+   false or pre-existing against the working tree and documented in the
+   Deviations / Surprises section. Flaky-looking failure? Re-run before
+   believing it; if it IS flaky and load-bearing, root-cause it now or
+   file it visibly — never normalize a red gate.
 5. **Version bump** per host convention, assigned at merge time from the
    default branch's current stream — never at plan time. Assert new !=
    old.
@@ -237,7 +251,11 @@ on a surface you've already fixed) — never as ceremony.
    eyeball, known gaps, and a mandatory **"Deviations / Surprises"**
    section — the plan-vs-reality confession is the highest-signal
    artifact in the field record. **The PR is the checkpoint. Never merge
-   it yourself; never push the default branch.**
+   it yourself; never push the default branch.** If the repo has no
+   GitHub remote (or `gh` is unavailable), write the full PR body — same
+   mandatory sections — to `PR_BODY.md` at the repo root, commit it on
+   the branch, tell the user, and stop: the branch plus the body file
+   are the checkpoint.
 7. **Iterating on an open PR**: fix on the same branch; after any push
    that adds commits, refresh the PR title/body to describe the whole
    branch as it now stands.
@@ -543,7 +561,7 @@ bash "$MODSMITH_DIR/scripts/doctor.sh" --json --targets "$TARGETS_JSON" > "$RUN_
 DOCTOR_EXIT=$?
 ```
 
-(`MODSMITH_DIR` is resolved the same way Bootstrap resolves it — `${CLAUDE_PLUGIN_ROOT}` first, then a walk-up fallback.)
+(`MODSMITH_DIR` is resolved the same way Bootstrap resolves it — `${CLAUDE_PLUGIN_ROOT}` when set; never a `$0` walk-up.)
 
 **Parse the JSON output** (shape documented in `scripts/doctor.sh`):
 

@@ -6,7 +6,13 @@ Scaffolds multi-loader (Fabric + NeoForge) mods, orchestrates the full dev cycle
 
 ## Status
 
-**v0.2.0 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.2.0 rebuilds `/modsmith:develop` as a **two-lane workflow**: Lane 1 (default) is a lightweight branch → failing test → fix → gate → PR loop with no ceremony; Lane 2 (opt-in) keeps the full orchestration (architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff) for genuinely multi-subsystem features. It also ships a compile-probe API oracle (`scripts/symbol-check.sh`), a verify-protocol + staleness banner for the landmine index, and arena-isolation GameTest rules distilled from field flake hunts. Distribution via the official Claude Code marketplace will follow real-world migration validation.
+**v0.2.1 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.2.0 rebuilt `/modsmith:develop` as a **two-lane workflow**: Lane 1 (default) is a lightweight branch → failing test → fix → gate → PR loop with no ceremony; Lane 2 (opt-in) keeps the full orchestration (architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff) for genuinely multi-subsystem features. It also ships a compile-probe API oracle (`scripts/symbol-check.sh`), a verify-protocol + staleness banner for the landmine index, and arena-isolation GameTest rules distilled from field flake hunts. Distribution via the official Claude Code marketplace will follow real-world migration validation.
+
+### Validation status
+
+The v0.2.0 release gate ran end-to-end: both documented init canaries (single-MC and multi-MC) plus one full Lane 1 `develop` run on a fresh scaffold. All three reached green — but **only via manual workarounds**: the scaffolds were red as rendered (template defects), and the doctor audit reported false hard-fails against repos the plugin itself had just scaffolded. **v0.2.1 fixes every finding from that gate** across templates, scripts, and skill docs.
+
+The standing canary criterion is that a fresh scaffold builds green **as rendered** — `./gradlew build` succeeds straight after `/modsmith:init`, with no hand edits — and the v0.2.1 change set re-ran the canaries to re-verify exactly that.
 
 ## What it does
 
@@ -105,8 +111,8 @@ modsmith/
 
 ## Known limitations
 
-- **No end-to-end migration validation yet.** The plugin is authored end-to-end; full validation against a real-world multi-loader migration is pending.
-- **No `/modsmith:publish` skill.** Modrinth + CurseForge per-loader uploads are v0.2.0.
+- **No real-world migration validation yet.** Fresh-scaffold canaries and a Lane 1 develop run are validated (see Status); validation against an existing real-world multi-loader codebase is still pending.
+- **No `/modsmith:publish` skill.** Modrinth + CurseForge per-loader uploads are planned for a later release.
 
 ## License
 
