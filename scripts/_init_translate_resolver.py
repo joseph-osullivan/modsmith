@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
-"""Translate `resolve-versions.sh` output into a multi-MC `vars.json` for
-`expand-templates.sh`.
+"""Translate `resolve-versions.sh` output into a `vars.json` for
+`expand-templates.sh` — multi-MC (default) or single-MC (`--single-mc`).
 
-The init skill calls this when 2+ MC versions were resolved AND the user
-opted for the multi-MC overlay scaffold. For single-MC scaffolds the skill
-builds vars.json inline (existing v0.1.0 path) and never invokes this
-helper.
+The init skill calls this in BOTH scaffold modes:
+
+- **multi-MC** (default): 2+ distinct MC versions resolved and the user
+  opted for the multi-MC overlay scaffold. Produces the `mc_versions`-array
+  schema.
+- **single-MC** (`--single-mc [--mc-version <v>]`): exactly one MC row is
+  kept (the first resolved row, or the row matching `--mc-version`).
+  Produces the flat single-MC schema so the skill never has to hand-build
+  the resolver→vars field mapping.
 
 Input:
     - --resolver  Path to a JSON file holding the raw output of
@@ -15,11 +20,15 @@ Input:
                   the user: modid, mod_name, mod_version, package_base,
                   package_base_path, description, license, authors, and
                   the selected `loaders` array.
-    - --out       Path to write the translated multi-MC vars.json to.
+    - --out       Path to write the translated vars.json to.
+    - --single-mc Emit the flat single-MC schema instead of the multi-MC
+                  one.
+    - --mc-version <v>
+                  With --single-mc: which resolved MC row to keep
+                  (default: the first row).
 
-The schema produced matches what `expand-templates.sh` consumes when it
-detects `mc_versions.length >= 2`. See expand-templates.sh's header doc
-for the canonical schema definition.
+The schemas produced match what `expand-templates.sh` consumes. See
+expand-templates.sh's header doc for the canonical schema definitions.
 
 Per-MC translation rules:
     mc_suffix             = mc_version with '.' -> '_'
@@ -45,11 +54,26 @@ Per-MC translation rules:
                             row has a non-null neoforge loader_version.
     has_parchment         = parchment.mc / parchment.version are both
                             non-null on the row.
+    is_unobfuscated       = MC major version >= 26. MC 26.x+ ships
+                            unobfuscated: the fabric templates switch to
+                            the new `net.fabricmc.fabric-loom` plugin id
+                            (Loom no-remap mode), drop the mappings block,
+                            and use plain `implementation` for mod deps.
+    fml_has_getcurrent    = MC major version >= 26. NeoForge 26.x FML has
+                            the instance API `FMLLoader.getCurrent()`;
+                            21.x only has static `FMLLoader.isProduction()`.
 
-Top-level:
-    java_version_shared   = max(per-MC java_version). Top-level :common
-                            compiles against this so its bytecode is
-                            forward-compatible with every per-MC JVM.
+Top-level (multi-MC only):
+    java_version_shared   = MIN(per-MC java_version). Top-level :common's
+                            bytecode is consumed by EVERY per-MC line, and
+                            an older JVM cannot load newer bytecode (a
+                            Java-21 line cannot consume Java-25 classes) —
+                            so :common must compile at the lowest Java
+                            among the targeted MC lines.
+    primary_mc_version    = first row's mc_version. Written into
+                            gradle.properties as `minecraft_version=` so
+                            repo-detection tooling (which greps that key)
+                            recognizes the scaffold.
     mc_versions           = ordered list of per-MC rows in resolver order.
 
 Exit codes:
@@ -68,6 +92,13 @@ from pathlib import Path
 
 def _mc_suffix(mc_version: str) -> str:
     return mc_version.replace(".", "_")
+
+
+def _mc_major(mc_version: str) -> int:
+    try:
+        return int(mc_version.split(".")[0])
+    except (ValueError, IndexError):
+        return 0
 
 
 def _row_or_none(loaders: dict, name: str) -> dict | None:
@@ -101,6 +132,11 @@ def _translate_row(resolver_row: dict, selected_loaders: list[str]) -> dict:
     has_neoforge = ("neoforge" in selected_loaders) and bool(neo_loader_v)
     has_parchment = bool(parch and parch.get("mc") and parch.get("version"))
 
+    # MC 26+ ships unobfuscated; this drives the fabric template's Loom
+    # plugin-id/mappings/dependency-form switch and the NeoForge template's
+    # FMLLoader API selection.
+    is_unobfuscated = _mc_major(mc_version) >= 26
+
     # NeoForm: prefer the resolver's resolved revision. If the resolver
     # couldn't reach maven.neoforged.net or no artifact matched the MC
     # line, fall back to a `<mc>-1` placeholder so the rendered
@@ -113,9 +149,9 @@ def _translate_row(resolver_row: dict, selected_loaders: list[str]) -> dict:
         print(
             f"warning: resolver did not return a NeoForm version for MC "
             f"{mc_version}; writing placeholder '{neoform_v}'. The "
-            f":versions:{mc_version}:common build will fail until you "
-            f"replace neoform_version_{_mc_suffix(mc_version)} in "
-            f"gradle.properties with the real revision from "
+            f"NeoForm-consuming :common build will fail until you replace "
+            f"the neoform_version pin in gradle.properties with the real "
+            f"revision from "
             f"https://maven.neoforged.net/releases/net/neoforged/neoform/",
             file=sys.stderr,
         )
@@ -134,45 +170,14 @@ def _translate_row(resolver_row: dict, selected_loaders: list[str]) -> dict:
         "has_fabric": has_fabric,
         "has_neoforge": has_neoforge,
         "has_parchment": has_parchment,
+        "is_unobfuscated": is_unobfuscated,
+        "fml_has_getcurrent": is_unobfuscated,
     }
 
 
-def translate(resolver_doc: dict, identity: dict) -> dict:
-    resolved = resolver_doc.get("resolved")
-    if not isinstance(resolved, list) or len(resolved) < 2:
-        raise ValueError(
-            "translate_resolver expects resolver output with 2+ entries in 'resolved'; "
-            f"got {len(resolved) if isinstance(resolved, list) else 'non-list'}"
-        )
-
-    selected_loaders = identity.get("loaders") or ["fabric", "neoforge"]
-    if not isinstance(selected_loaders, list):
-        raise ValueError("identity.loaders must be an array of loader names")
-
-    # De-duplicate while preserving order: if the user passed
-    # --mc latest,latest we only want one row.
-    seen: set[str] = set()
-    mc_rows: list[dict] = []
-    for row in resolved:
-        if not isinstance(row, dict):
-            continue
-        mc_v = row.get("mc_version")
-        if not mc_v or mc_v in seen:
-            continue
-        seen.add(mc_v)
-        mc_rows.append(_translate_row(row, selected_loaders))
-
-    if len(mc_rows) < 2:
-        raise ValueError(
-            f"after de-duplication only {len(mc_rows)} distinct MC version(s) remained; "
-            "multi-MC scaffolding requires at least 2 distinct MC versions"
-        )
-
-    java_version_shared = max(r["java_version"] for r in mc_rows)
-
-    # Carry through identity fields verbatim. Default package_base_path
-    # from package_base if the caller didn't provide it.
-    out = {
+def _identity_fields(identity: dict, selected_loaders: list[str]) -> dict:
+    """Carry through identity fields verbatim; default package_base_path."""
+    return {
         "modid": identity["modid"],
         "mod_name": identity.get("mod_name", identity["modid"]),
         "mod_version": identity.get("mod_version", "0.1.0"),
@@ -184,9 +189,110 @@ def translate(resolver_doc: dict, identity: dict) -> dict:
         "license": identity.get("license", "MIT"),
         "authors": identity.get("authors", ""),
         "loaders": selected_loaders,
-        "java_version_shared": java_version_shared,
-        "mc_versions": mc_rows,
     }
+
+
+def _dedupe_rows(resolved: list, selected_loaders: list[str]) -> list[dict]:
+    """De-duplicate on mc_version while preserving order (so passing
+    `latest,latest` only yields one row)."""
+    seen: set[str] = set()
+    mc_rows: list[dict] = []
+    for row in resolved:
+        if not isinstance(row, dict):
+            continue
+        mc_v = row.get("mc_version")
+        if not mc_v or mc_v in seen:
+            continue
+        seen.add(mc_v)
+        mc_rows.append(_translate_row(row, selected_loaders))
+    return mc_rows
+
+
+def translate(resolver_doc: dict, identity: dict) -> dict:
+    """Multi-MC translation: resolver output (2+ distinct MCs) → the
+    `mc_versions`-array vars schema."""
+    resolved = resolver_doc.get("resolved")
+    if not isinstance(resolved, list) or len(resolved) < 2:
+        raise ValueError(
+            "translate_resolver expects resolver output with 2+ entries in 'resolved'; "
+            f"got {len(resolved) if isinstance(resolved, list) else 'non-list'}"
+        )
+
+    selected_loaders = identity.get("loaders") or ["fabric", "neoforge"]
+    if not isinstance(selected_loaders, list):
+        raise ValueError("identity.loaders must be an array of loader names")
+
+    mc_rows = _dedupe_rows(resolved, selected_loaders)
+
+    if len(mc_rows) < 2:
+        raise ValueError(
+            f"after de-duplication only {len(mc_rows)} distinct MC version(s) remained; "
+            "multi-MC scaffolding requires at least 2 distinct MC versions"
+        )
+
+    # MIN, not max: every per-MC line consumes :common's bytecode, and an
+    # older JVM cannot load newer bytecode. Building :common at the highest
+    # Java would make the older lines fail dependency resolution
+    # ("only compatible with JVM runtime version <N> or newer").
+    java_version_shared = min(r["java_version"] for r in mc_rows)
+
+    out = _identity_fields(identity, selected_loaders)
+    out["java_version_shared"] = java_version_shared
+    out["primary_mc_version"] = mc_rows[0]["mc_version"]
+    out["mc_versions"] = mc_rows
+    return out
+
+
+def translate_single(
+    resolver_doc: dict, identity: dict, mc_version: str | None = None
+) -> dict:
+    """Single-MC translation: pick ONE resolver row (the first, or the one
+    matching `mc_version`) and emit the flat single-MC vars schema."""
+    resolved = resolver_doc.get("resolved")
+    if not isinstance(resolved, list) or len(resolved) < 1:
+        raise ValueError(
+            "single-MC translation expects resolver output with 1+ entries in 'resolved'"
+        )
+
+    selected_loaders = identity.get("loaders") or ["fabric", "neoforge"]
+    if not isinstance(selected_loaders, list):
+        raise ValueError("identity.loaders must be an array of loader names")
+
+    mc_rows = _dedupe_rows(resolved, selected_loaders)
+    if not mc_rows:
+        raise ValueError("no resolver row had a usable mc_version")
+
+    if mc_version:
+        matches = [r for r in mc_rows if r["mc_version"] == mc_version]
+        if not matches:
+            raise ValueError(
+                f"--mc-version {mc_version} did not match any resolved row "
+                f"(have: {', '.join(r['mc_version'] for r in mc_rows)})"
+            )
+        row = matches[0]
+    else:
+        row = mc_rows[0]
+
+    out = _identity_fields(identity, selected_loaders)
+    # Flat single-MC schema: the row's fields at top level (no mc_versions
+    # array, no mc_suffix — the flat templates don't use suffixed keys).
+    for key in (
+        "mc_version",
+        "java_version",
+        "neoform_version",
+        "neoform_version_is_placeholder",
+        "neoforge_version",
+        "fabric_loader_version",
+        "fabric_api_version",
+        "parchment_mc_version",
+        "parchment_version",
+        "has_fabric",
+        "has_neoforge",
+        "has_parchment",
+        "is_unobfuscated",
+        "fml_has_getcurrent",
+    ):
+        out[key] = row[key]
     return out
 
 
@@ -194,7 +300,17 @@ def _main() -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--resolver", required=True, help="Path to resolver JSON file.")
     p.add_argument("--identity", required=True, help="Path to identity JSON file.")
-    p.add_argument("--out", required=True, help="Path to write multi-MC vars.json to.")
+    p.add_argument("--out", required=True, help="Path to write vars.json to.")
+    p.add_argument(
+        "--single-mc",
+        action="store_true",
+        help="Emit the flat single-MC vars schema (keep exactly one MC row).",
+    )
+    p.add_argument(
+        "--mc-version",
+        default=None,
+        help="With --single-mc: which resolved MC row to keep (default: first).",
+    )
     args = p.parse_args()
 
     try:
@@ -210,7 +326,10 @@ def _main() -> int:
             return 2
 
     try:
-        vars_doc = translate(resolver_doc, identity)
+        if args.single_mc:
+            vars_doc = translate_single(resolver_doc, identity, args.mc_version)
+        else:
+            vars_doc = translate(resolver_doc, identity)
     except ValueError as e:
         print(f"translation failed: {e}", file=sys.stderr)
         return 1

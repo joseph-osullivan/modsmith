@@ -27,20 +27,34 @@
 #     templates for Java sources + manifests (each rendered per MC ×
 #     loader with that MC's pins flattened into the context).
 #
-# vars.json (single-MC schema) — unchanged from v0.1.0:
+# vars.json (single-MC schema). Produced by
+# `scripts/_init_translate_resolver.py --single-mc` (or hand-written):
 #   {
 #     "modid": "testmod", "mod_name": "Test Mod", ...,
-#     "mc_version": "26.1.2", "java_version": "25",
-#     "fabric_loader_version": "0.19.2", "fabric_api_version": "0.149.1+26.1.2",
-#     "neoforge_version": "26.1.2.64-beta",
+#     "mc_version": "26.2", "java_version": "25",
+#     "neoform_version": "26.2-1",
+#     "fabric_loader_version": "0.19.3", "fabric_api_version": "0.154.0+26.2",
+#     "neoforge_version": "26.2.0.7-beta",
 #     "parchment_mc_version": "1.21.1", "parchment_version": "2024.11.17",
+#     "has_parchment": true,
+#     "is_unobfuscated": true,        // MC >= 26: Loom no-remap plugin id, no
+#                                     // mappings block, plain `implementation`
+#     "fml_has_getcurrent": true,     // MC >= 26: FMLLoader.getCurrent() exists
 #     "loaders": ["fabric","neoforge"]
 #   }
+#   (`has_parchment`, `is_unobfuscated`, `fml_has_getcurrent`, and
+#    `neoform_version` are derived from `mc_version` by the renderer when
+#    absent, so pre-v0.2.1 hand-written vars files still render.)
 #
-# vars.json (multi-MC schema):
+# vars.json (multi-MC schema). Produced by scripts/_init_translate_resolver.py:
 #   {
 #     "modid": "testmod", "mod_name": "Test Mod", ...,
-#     "java_version_shared": "25",   // highest Java across MCs; top-level common uses this
+#     "java_version_shared": "21",   // MIN Java across MC lines: every line
+#                                    // consumes :common's bytecode and an older
+#                                    // JVM cannot load newer bytecode
+#     "primary_mc_version": "26.2",  // first MC line; written to
+#                                    // gradle.properties as minecraft_version=
+#                                    // for repo-detection tooling
 #     "loaders": ["fabric","neoforge"],
 #     "mc_versions": [
 #       {
@@ -48,18 +62,23 @@
 #         "mc_suffix":  "1_21_1",          // dots→underscores, used for gradle.properties keys
 #         "java_version": "21",
 #         "neoform_version": "1.21.1-20240808.144430",
-#         "neoforge_version": "21.1.230",
-#         "fabric_loader_version": "0.16.10",
-#         "fabric_api_version": "0.111.0+1.21.1",
+#         "neoforge_version": "21.1.235",
+#         "fabric_loader_version": "0.19.3",
+#         "fabric_api_version": "0.116.13+1.21.1",
 #         "parchment_mc_version": "1.21.1",
 #         "parchment_version": "2024.11.17",
 #         "has_fabric": true,
 #         "has_neoforge": true,
-#         "has_parchment": true
+#         "has_parchment": true,
+#         "is_unobfuscated": false,        // MC < 26 (obfuscated): legacy
+#                                          // fabric-loom id + mappings block
+#         "fml_has_getcurrent": false      // NeoForge 21.x: static FMLLoader API
 #       },
 #       {
-#         "mc_version": "26.1.2",
-#         "mc_suffix": "26_1_2",
+#         "mc_version": "26.2",
+#         "mc_suffix": "26_2",
+#         "is_unobfuscated": true,
+#         "fml_has_getcurrent": true,
 #         ...
 #       }
 #     ]
@@ -188,12 +207,18 @@ render_single_mc() {
   render "$TEMPLATES_DIR/gradle.properties.mustache" "$OUT_DIR/gradle.properties"
   render "$TEMPLATES_DIR/settings.gradle.mustache"   "$OUT_DIR/settings.gradle"
   render "$TEMPLATES_DIR/root.build.gradle.mustache" "$OUT_DIR/build.gradle"
+  render "$TEMPLATES_DIR/CLAUDE.md.mustache"         "$OUT_DIR/CLAUDE.md"
   render "$TEMPLATES_DIR/common.build.gradle.mustache" "$OUT_DIR/common/build.gradle"
 
   local common_java_dir="$OUT_DIR/common/src/main/java/$PACKAGE_BASE_PATH"
   render "$TEMPLATES_DIR/PlatformHelper.java.mustache" "$common_java_dir/platform/IPlatformHelper.java"
   render "$TEMPLATES_DIR/Services.java.mustache"        "$common_java_dir/platform/Services.java"
   render "$TEMPLATES_DIR/ModInit.java.mustache"         "$common_java_dir/ModInit.java"
+
+  # Tier-1 test tree: JUnit wiring lives in common/build.gradle; ship a
+  # trivial sample test so the red-first test pattern exists on day one.
+  render "$TEMPLATES_DIR/ScaffoldSmokeTest.java.mustache" \
+    "$OUT_DIR/common/src/test/java/$PACKAGE_BASE_PATH/unit/ScaffoldSmokeTest.java"
 
   local common_res="$OUT_DIR/common/src/main/resources"
   render "$TEMPLATES_DIR/accesstransformer.cfg.mustache" "$common_res/META-INF/accesstransformer.cfg"
@@ -242,6 +267,7 @@ render_multimc() {
   render "$MULTIMC_TEMPLATES_DIR/gradle.properties.mustache" "$OUT_DIR/gradle.properties"
   render "$MULTIMC_TEMPLATES_DIR/settings.gradle.mustache"   "$OUT_DIR/settings.gradle"
   render "$MULTIMC_TEMPLATES_DIR/root.build.gradle.mustache" "$OUT_DIR/build.gradle"
+  render "$TEMPLATES_DIR/CLAUDE.md.mustache"                 "$OUT_DIR/CLAUDE.md"
 
   # Top-level :common — pure Java, MC-agnostic.
   render "$MULTIMC_TEMPLATES_DIR/common.build.gradle.mustache" "$OUT_DIR/common/build.gradle"
@@ -252,6 +278,11 @@ render_multimc() {
   # exists so IDEs pick it up.
   mkdir -p "$OUT_DIR/common/src/main/java/$PACKAGE_BASE_PATH"
   mkdir -p "$OUT_DIR/common/src/main/resources"
+
+  # Tier-1 test tree: JUnit wiring lives in common/build.gradle; ship a
+  # trivial sample test so the red-first test pattern exists on day one.
+  render "$TEMPLATES_DIR/ScaffoldSmokeTest.java.mustache" \
+    "$OUT_DIR/common/src/test/java/$PACKAGE_BASE_PATH/unit/ScaffoldSmokeTest.java"
 
   # For each MC row, render the per-MC subprojects.
   local mc_count

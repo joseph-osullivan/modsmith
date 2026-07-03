@@ -8,9 +8,11 @@ The base context is `vars.json`. If `inner_context.json` is supplied, its
 fields are merged on top (overlay) so per-MC × per-loader contexts can
 override or add fields without mutating the global vars file.
 
-`package_base_path`, `mc_version_range`, and `neoforge_loader_version_range`
-are derived if not already present (matching the single-MC renderer's
-behavior).
+`package_base_path`, `mc_version_range`, `neoforge_loader_version_range`,
+`neoform_version`, `has_parchment`, `is_unobfuscated`, and
+`fml_has_getcurrent` are derived if not already present (so hand-written
+vars files that predate those keys still render; the init skill's
+translator normally supplies them explicitly).
 
 Exit codes:
   0 — rendered
@@ -42,6 +44,26 @@ def _derive(ctx: dict) -> dict:
         ctx["mc_version_range"] = f"[{mc},)"
     if "neoforge_loader_version_range" not in ctx:
         ctx["neoforge_loader_version_range"] = "[4,)"
+    if mc and not ctx.get("neoform_version"):
+        # Fallback placeholder only — the resolver/translator normally
+        # supplies the real revision from maven.neoforged.net.
+        ctx["neoform_version"] = f"{mc}-1"
+    if "has_parchment" not in ctx:
+        ctx["has_parchment"] = bool(
+            ctx.get("parchment_mc_version") and ctx.get("parchment_version")
+        )
+    if mc:
+        try:
+            mc_major = int(str(mc).split(".")[0])
+        except ValueError:
+            mc_major = 0
+        # MC 26+ ships unobfuscated (drives the fabric Loom plugin-id /
+        # mappings / dependency-form switch) and its NeoForge FML exposes
+        # the FMLLoader.getCurrent() instance API.
+        if "is_unobfuscated" not in ctx:
+            ctx["is_unobfuscated"] = mc_major >= 26
+        if "fml_has_getcurrent" not in ctx:
+            ctx["fml_has_getcurrent"] = mc_major >= 26
     return ctx
 
 
