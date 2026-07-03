@@ -6,6 +6,7 @@
 #   doctor.sh                                    # detects targets via detect-targets.sh, prints JSON
 #   doctor.sh --json                             # same (the --json flag is currently a no-op; JSON is the only output)
 #   doctor.sh --targets <path/to/detected.json>  # use a pre-computed targets JSON
+#   doctor.sh --selftest                         # run the built-in matrix-parsing regression test and exit
 #
 # Output schema (see skills/doctor/SKILL.md for the user-facing version):
 #   {
@@ -35,11 +36,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 JSON_ONLY=0
 TARGETS_PATH=""
+SELFTEST=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --json)
       JSON_ONLY=1
+      shift
+      ;;
+    --selftest)
+      SELFTEST=1
       shift
       ;;
     --targets)
@@ -69,19 +75,21 @@ ROOT="$(pwd)"
 # detect-targets.sh against cwd.
 # ----------------------------------------------------------------------------
 
-if [ -z "$TARGETS_PATH" ]; then
-  TARGETS_PATH="$(mktemp -t modsmith-doctor-targets.XXXXXX)"
-  # detect-targets.sh exits 1 on "unknown" layout; that's fine — we'll
-  # surface the layout and skip most checks. So we deliberately don't
-  # propagate its exit code here.
-  if ! bash "$SCRIPT_DIR/detect-targets.sh" "$ROOT" > "$TARGETS_PATH" 2>/dev/null; then
-    : # ignore non-zero; the JSON still describes the layout
+if [ "$SELFTEST" -eq 0 ]; then
+  if [ -z "$TARGETS_PATH" ]; then
+    TARGETS_PATH="$(mktemp -t modsmith-doctor-targets.XXXXXX)"
+    # detect-targets.sh exits 1 on "unknown" layout; that's fine — we'll
+    # surface the layout and skip most checks. So we deliberately don't
+    # propagate its exit code here.
+    if ! bash "$SCRIPT_DIR/detect-targets.sh" "$ROOT" > "$TARGETS_PATH" 2>/dev/null; then
+      : # ignore non-zero; the JSON still describes the layout
+    fi
   fi
-fi
 
-if [ ! -f "$TARGETS_PATH" ]; then
-  warn "targets JSON not found: $TARGETS_PATH"
-  exit 2
+  if [ ! -f "$TARGETS_PATH" ]; then
+    warn "targets JSON not found: $TARGETS_PATH"
+    exit 2
+  fi
 fi
 
 # ----------------------------------------------------------------------------
@@ -172,8 +180,14 @@ json_field_bool() {
   ' "$file"
 }
 
-# Iterate the "mc_commons" array — emit one tab-separated row per element:
-#   mc_version\tsubproject\tjava_toolchain
+# Iterate the "mc_commons" array — emit one row per element, fields joined by
+# the ASCII unit separator \037 (0x1f):
+#   mc_version \037 subproject \037 java_toolchain
+#
+# The delimiter must be a NON-whitespace character: bash treats whitespace IFS
+# characters (like tab) specially — runs collapse and leading/trailing ones are
+# stripped — so an empty field would shift every later field left. \037 is
+# non-whitespace, preserving empty fields positionally.
 json_iter_mc_commons() {
   local file="$1"
   awk '
@@ -214,7 +228,7 @@ json_iter_mc_commons() {
         mc   = extract_str(obj, "mc_version")
         subp = extract_str(obj, "subproject")
         java = extract_int(obj, "java_toolchain")
-        printf "%s\t%s\t%s\n", mc, subp, java
+        printf "%s\037%s\037%s\n", mc, subp, java
       }
     }
     function extract_str(obj, k) {
@@ -256,8 +270,10 @@ json_iter_mc_commons() {
   ' "$file"
 }
 
-# Iterate the "targets" array — emit one tab-separated row per element:
-#   loader\tmc_version\tloader_version\tsubproject\tjava_toolchain
+# Iterate the "targets" array — emit one row per element, fields joined by
+# the ASCII unit separator \037 (0x1f; see json_iter_mc_commons for why the
+# delimiter must not be IFS whitespace):
+#   loader \037 mc_version \037 loader_version \037 subproject \037 java_toolchain
 json_iter_targets() {
   local file="$1"
   awk '
@@ -304,7 +320,7 @@ json_iter_targets() {
         lver     = extract_str(obj, "loader_version")
         subp     = extract_str(obj, "subproject")
         java     = extract_int(obj, "java_toolchain")
-        printf "%s\t%s\t%s\t%s\t%s\n", loader, mc, lver, subp, java
+        printf "%s\037%s\037%s\037%s\037%s\n", loader, mc, lver, subp, java
       }
     }
     function extract_str(obj, k) {
@@ -348,39 +364,115 @@ json_iter_targets() {
 
 # ----------------------------------------------------------------------------
 # Pull the matrix into shell variables.
+#
+# Factored into a function so --selftest exercises EXACTLY the same code path
+# as real runs. The readers split on \037 (see json_iter_targets): a plain
+# tab-IFS read would collapse an empty field's adjacent delimiters and shift
+# every later field left (e.g. an empty mc_version made subproject read as the
+# java toolchain, cascading into false hard_fails).
 # ----------------------------------------------------------------------------
 
-LAYOUT=$(json_field_string "$TARGETS_PATH" "layout")
-COMMON_SUBPROJECT=$(json_field_string "$TARGETS_PATH" "common_subproject")
-MULTI_MC=$(json_field_bool "$TARGETS_PATH" "multi_mc")
+load_targets_matrix() {
+  local file="$1"
 
-# Per-target parallel arrays
-T_LOADER=()
-T_MC=()
-T_LVER=()
-T_SUBPROJECT=()
-T_JAVA=()
+  LAYOUT=$(json_field_string "$file" "layout")
+  COMMON_SUBPROJECT=$(json_field_string "$file" "common_subproject")
+  MULTI_MC=$(json_field_bool "$file" "multi_mc")
 
-while IFS=$'\t' read -r loader mc lver subp java; do
-  [ -z "$loader" ] && continue
-  T_LOADER+=("$loader")
-  T_MC+=("$mc")
-  T_LVER+=("$lver")
-  T_SUBPROJECT+=("$subp")
-  T_JAVA+=("$java")
-done < <(json_iter_targets "$TARGETS_PATH")
+  # Per-target parallel arrays
+  T_LOADER=()
+  T_MC=()
+  T_LVER=()
+  T_SUBPROJECT=()
+  T_JAVA=()
 
-# Per-MC common subproject parallel arrays (populated only when multi_mc=1).
-MC_COMMON_MC=()
-MC_COMMON_SUBPROJECT=()
-MC_COMMON_JAVA=()
+  local loader mc lver subp java
+  while IFS=$'\037' read -r loader mc lver subp java; do
+    [ -z "$loader" ] && continue
+    T_LOADER+=("$loader")
+    T_MC+=("$mc")
+    T_LVER+=("$lver")
+    T_SUBPROJECT+=("$subp")
+    T_JAVA+=("$java")
+  done < <(json_iter_targets "$file")
 
-while IFS=$'\t' read -r mc subp java; do
-  [ -z "$mc" ] && continue
-  MC_COMMON_MC+=("$mc")
-  MC_COMMON_SUBPROJECT+=("$subp")
-  MC_COMMON_JAVA+=("$java")
-done < <(json_iter_mc_commons "$TARGETS_PATH")
+  # Per-MC common subproject parallel arrays (populated only when multi_mc=1).
+  MC_COMMON_MC=()
+  MC_COMMON_SUBPROJECT=()
+  MC_COMMON_JAVA=()
+
+  while IFS=$'\037' read -r mc subp java; do
+    [ -z "$mc" ] && continue
+    MC_COMMON_MC+=("$mc")
+    MC_COMMON_SUBPROJECT+=("$subp")
+    MC_COMMON_JAVA+=("$java")
+  done < <(json_iter_mc_commons "$file")
+}
+
+# ----------------------------------------------------------------------------
+# --selftest: regression guard for the row parsing above. A row containing an
+# EMPTY field must still parse positionally — every field lands in its own
+# variable, nothing shifts left. Exits 0 on success, 1 on any mismatch.
+# ----------------------------------------------------------------------------
+
+__selftest_fail=0
+__assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$actual" != "$expected" ]; then
+    warn "selftest FAIL: $label — expected '$expected', got '$actual'"
+    __selftest_fail=1
+  fi
+}
+
+run_parse_selftest() {
+  local fixture
+  fixture="$(mktemp -t modsmith-doctor-selftest.XXXXXX)"
+  cat > "$fixture" <<'EOF'
+{"layout":"multiloader-multi-mc","multi_mc":true,"common_subproject":":common",
+ "mc_commons":[{"mc_version":"1.21.1","subproject":"","java_toolchain":21}],
+ "targets":[
+   {"loader":"fabric","mc_version":"","loader_version":"0.19.3","subproject":":fabric","java_toolchain":25},
+   {"loader":"neoforge","mc_version":"26.2","loader_version":"26.2.0.7-beta","subproject":":neoforge","java_toolchain":25}
+ ],
+ "java_toolchain":25,"detection_notes":[]}
+EOF
+
+  load_targets_matrix "$fixture"
+  rm -f "$fixture"
+
+  __assert_eq "targets row count"           "2"             "${#T_LOADER[@]}"
+  # Row 0 has an empty mc_version — later fields must NOT shift left.
+  __assert_eq "row0 loader"                 "fabric"        "${T_LOADER[0]:-}"
+  __assert_eq "row0 mc_version (empty)"     ""              "${T_MC[0]:-}"
+  __assert_eq "row0 loader_version"         "0.19.3"        "${T_LVER[0]:-}"
+  __assert_eq "row0 subproject"             ":fabric"       "${T_SUBPROJECT[0]:-}"
+  __assert_eq "row0 java_toolchain"         "25"            "${T_JAVA[0]:-}"
+  # Row 1 is fully populated — normal parse must be unaffected.
+  __assert_eq "row1 loader"                 "neoforge"      "${T_LOADER[1]:-}"
+  __assert_eq "row1 mc_version"             "26.2"          "${T_MC[1]:-}"
+  __assert_eq "row1 loader_version"         "26.2.0.7-beta" "${T_LVER[1]:-}"
+  __assert_eq "row1 subproject"             ":neoforge"     "${T_SUBPROJECT[1]:-}"
+  __assert_eq "row1 java_toolchain"         "25"            "${T_JAVA[1]:-}"
+  # mc_commons row has an empty middle field (subproject).
+  __assert_eq "mc_commons row count"        "1"             "${#MC_COMMON_MC[@]}"
+  __assert_eq "commons0 mc_version"         "1.21.1"        "${MC_COMMON_MC[0]:-}"
+  __assert_eq "commons0 subproject (empty)" ""              "${MC_COMMON_SUBPROJECT[0]:-}"
+  __assert_eq "commons0 java_toolchain"     "21"            "${MC_COMMON_JAVA[0]:-}"
+
+  if [ "$__selftest_fail" -ne 0 ]; then
+    warn "selftest: FAILED"
+    return 1
+  fi
+  warn "selftest: ok — empty fields parse positionally in both iterators"
+  return 0
+}
+
+if [ "$SELFTEST" -eq 1 ]; then
+  run_parse_selftest
+  exit $?
+fi
+
+load_targets_matrix "$TARGETS_PATH"
 
 # A helper: list the unique MC versions in the multi-MC matrix.
 unique_mcs() {
@@ -1692,21 +1784,30 @@ check_pinned_versions_fresh() {
         # Hit NeoForge's maven-metadata for the neoforge artifact.
         local body
         body=$(http_fetch "https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml") || continue
-        local latest
-        latest=$(awk '/<latest>/ {
-          v = $0
-          sub(/.*<latest>/, "", v)
-          sub(/<\/latest>.*/, "", v)
-          print v
-        }' <<< "$body" | head -1) || true
         checked=1
-        if [ -n "$latest" ] && [ -n "$lver" ] && [ "$latest" != "$lver" ]; then
-          # Compare on the major+minor prefix; if user has 26.1.2.43 and
-          # latest is 26.1.2.99, we surface it; if the major differs (still
-          # 26.1.x), that's a regular bump suggestion.
+        [ -n "$lver" ] || continue
+        # One maven-metadata covers EVERY MC line, and <latest> points at
+        # whichever line published most recently — often an older-MC LTS line
+        # (e.g. comparing a 26.2 pin against 21.1.x). Freshness only makes
+        # sense within the pin's own line: filter the <version> list by the
+        # pin's line prefix (first two components, e.g. "26.2.") and take the
+        # last match — metadata lists versions in release order. Mirrors
+        # resolve_neoforge() in resolve-versions.sh.
+        local line_prefix
+        line_prefix=$(printf '%s' "$lver" | awk -F. 'NF >= 3 { print $1 "." $2 "." }') || true
+        if [ -z "$line_prefix" ]; then
+          continue
+        fi
+        local latest
+        latest=$(printf '%s' "$body" \
+          | grep -oE '<version>[^<]+</version>' \
+          | sed -E 's|</?version>||g' \
+          | grep "^${line_prefix//./\\.}" \
+          | tail -1) || true
+        if [ -n "$latest" ] && [ "$latest" != "$lver" ]; then
           add_finding "pinned-versions-fresh" "warn" "fail" \
             "gradle.properties" "" \
-            "NeoForge pinned at $lver${mc_label}; latest is $latest" \
+            "NeoForge pinned at $lver${mc_label}; latest on the ${line_prefix}x line is $latest" \
             "Bump neoforge_version${suffix} to $latest (or recent enough; check release notes for breaking changes)"
           any=1
         fi
@@ -1730,13 +1831,51 @@ check_pinned_versions_fresh() {
 # In Fabric build.gradle files, mod artifacts from CurseForge / Modrinth
 # must use `modImplementation` (not raw `implementation`). NeoForge's MDG
 # transforms classpath deps at the plugin level so the rule is Fabric-only.
+#
+# EXCEPTION — unobfuscated MC lines (26.x+): Loom's new plugin id
+# (`net.fabricmc.fabric-loom`) runs in no-remap mode. modImplementation and
+# the other mod* configurations do not exist there, and plain
+# `implementation` of mod jars is the ONLY buildable form — so the rule must
+# not fire on those targets. Detection mirrors how the init templates pick
+# the pipeline: the Loom plugin id in the build file is authoritative, with
+# the MC line's major version (>= 26 → unobfuscated) as fallback.
 # ----------------------------------------------------------------------------
+
+# 0 = the fabric target runs Loom in no-remap mode (unobfuscated MC).
+fabric_target_is_unobfuscated() {
+  local build_file="$1"
+  local mc="$2"
+  if [ -n "$build_file" ] && [ -f "$build_file" ]; then
+    # Grep the comment-stripped code: the templates discuss BOTH plugin ids
+    # in comments, so a raw grep would misclassify (e.g. a legacy-id build
+    # file whose header comment mentions the new dotted id).
+    local code
+    code=$(strip_gradle_comments "$build_file")
+    # New dotted plugin id => no-remap Loom, regardless of MC version.
+    if printf '%s' "$code" | grep -qE "['\"]net\.fabricmc\.fabric-loom['\"]"; then
+      return 0
+    fi
+    # Explicit legacy id (without the net.fabricmc. prefix) => remap
+    # pipeline is active, so the modImplementation rule applies.
+    if printf '%s' "$code" | grep -qE "['\"]fabric-loom['\"]"; then
+      return 1
+    fi
+  fi
+  # No recognizable Loom id — fall back to the MC line: 26.x+ ships
+  # unobfuscated.
+  local major="${mc%%.*}"
+  case "$major" in
+    ''|*[!0-9]*) return 1 ;;
+    *) [ "$major" -ge 26 ] ;;
+  esac
+}
 
 check_forge_deps_via_modimpl() {
   # Walk every Fabric build file detected in the matrix (one per (mc, fabric)
   # pair in multi-MC; one in single-MC multiloader; potentially the root in
   # single-loader fabric). The antipattern is the same across all of them.
   local files=()
+  local file_mcs=()
   local i=0
   local n=${#T_LOADER[@]}
   while [ $i -lt $n ]; do
@@ -1746,7 +1885,10 @@ check_forge_deps_via_modimpl() {
       if [ -n "$d" ]; then
         local bf
         bf=$(subproject_build_file "$d")
-        [ -n "$bf" ] && files+=("$bf")
+        if [ -n "$bf" ]; then
+          files+=("$bf")
+          file_mcs+=("${T_MC[$i]}")
+        fi
       fi
     fi
     i=$((i + 1))
@@ -1759,8 +1901,20 @@ check_forge_deps_via_modimpl() {
   fi
 
   local any=0
-  local fb
-  for fb in "${files[@]}"; do
+  local scanned=0
+  local noremap_skipped=0
+  local k=0
+  while [ $k -lt ${#files[@]} ]; do
+    local fb="${files[$k]}"
+    local fmc="${file_mcs[$k]}"
+    k=$((k + 1))
+    if fabric_target_is_unobfuscated "$fb" "$fmc"; then
+      # No-remap Loom: modImplementation does not exist; plain
+      # implementation of mod jars is correct here.
+      noremap_skipped=$((noremap_skipped + 1))
+      continue
+    fi
+    scanned=1
     while IFS=: read -r lineno line; do
       [ -z "$lineno" ] && continue
       # Skip lines that already use modImplementation / modApi etc.
@@ -1784,8 +1938,17 @@ check_forge_deps_via_modimpl() {
   done
 
   if [ $any -eq 0 ]; then
-    add_finding "forge-deps-via-modimplementation" "hard_fail" "pass" "" "" \
-      "all Fabric mod-jar dependencies use modImplementation across every Fabric subproject" ""
+    if [ $scanned -eq 0 ]; then
+      add_finding "forge-deps-via-modimplementation" "hard_fail" "skip" "" "" \
+        "skipped: every Fabric target is on an unobfuscated MC line (no-remap Loom), where modImplementation does not exist and plain implementation is the only buildable form" ""
+    else
+      local extra=""
+      if [ $noremap_skipped -gt 0 ]; then
+        extra=" ($noremap_skipped no-remap target(s) on unobfuscated MC lines exempt)"
+      fi
+      add_finding "forge-deps-via-modimplementation" "hard_fail" "pass" "" "" \
+        "all Fabric mod-jar dependencies use modImplementation across every remap-mode Fabric subproject$extra" ""
+    fi
   fi
 }
 

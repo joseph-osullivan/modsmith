@@ -1,11 +1,20 @@
-// Root build file. The plugin declarations here use `apply false` because
-// each subproject opts into the loader-specific plugin it needs. The shared
-// config for all three subprojects lives in the `subprojects {}` block below.
+// Root build file. The loader plugin declarations here use `apply false`
+// because each subproject opts into the loader-specific plugin it needs. The
+// shared config for all three subprojects lives in the `subprojects {}` block
+// below.
+//
+// NOTE: core Gradle plugins (java-library, idea, ...) must NOT be listed here
+// with `apply false` — on Gradle 9+ that is a hard error ("core Gradle
+// plugin ... 'apply false' is a no-op"). Subprojects apply core plugins
+// directly via `apply plugin:`.
 
 plugins {
-    id 'java-library' apply false
     id 'idea'
     // Loader plugins declared but not applied at the root; subprojects apply.
+    // The Loom jar registers BOTH plugin ids (legacy 'fabric-loom' for
+    // obfuscated MC lines, 'net.fabricmc.fabric-loom' for unobfuscated
+    // 26.x+); declaring one marker here puts the jar on the classpath so
+    // the :fabric subproject can apply whichever id fits its MC line.
     id 'net.fabricmc.fabric-loom' version '1.15.5' apply false
     id 'net.neoforged.moddev'    version '2.0.141' apply false
 }
@@ -27,7 +36,7 @@ subprojects {
     def modName           = project.findProperty('mod_name')
     def modVersion        = project.findProperty('mod_version')
     def modGroup          = project.findProperty('group')
-    def mcVersion         = project.findProperty('mc_version')
+    def mcVersion         = project.findProperty('minecraft_version')
     def javaVersion       = (project.findProperty('java_version') as String).toInteger()
 
     group   = modGroup

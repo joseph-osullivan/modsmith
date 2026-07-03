@@ -10,41 +10,70 @@ at the bottom — that's the source of truth, this table is a snapshot.
 
 ## The matrix
 
+Snapshot as of 2026-07 (live-verified by the v0.2.0 validation gate):
+
 | MC version | Loader | Loader version | Build plugin | Java | Mappings | Source |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1.21.1 | Fabric | fabric-loader 0.16.10 | fabric-loom 1.7 | 21 | Yarn 1.21.1+build.3 (or Mojmap via loom-mappings-mojmap) | [meta.fabricmc.net/v2/versions/loader/1.21.1](https://meta.fabricmc.net/v2/versions/loader/1.21.1) |
-| 1.21.1 | NeoForge | 21.1.215 (latest of LTS line as of May 2026) | net.neoforged.moddev 2.0.78 | 21 | Mojmap (NeoForge default) + Parchment 2024.11.17-1.21.1 | [versions.neoforged.net/?nfV=21.1](https://versions.neoforged.net/?nfV=21.1) |
-| 1.21.1 | Fabric API | fabric-api 0.116.4+1.21.1 | — (mod-dep, not plugin) | 21 | — | [meta.fabricmc.net/v2/versions/fabric-api](https://meta.fabricmc.net/v2/versions/fabric-api) |
-| 26.1.2 | Fabric | fabric-loader 0.18.6 | fabric-loom (current; ≥ 1.10) | 25 | Mojmap (Yarn lags 26.1) | [meta.fabricmc.net/v2/versions/loader/26.1.2](https://meta.fabricmc.net/v2/versions/loader/26.1.2) |
-| 26.1.2 | Fabric API | fabric-api 0.145.4+26.1.2 | — | 25 | — | [meta.fabricmc.net/v2/versions/fabric-api](https://meta.fabricmc.net/v2/versions/fabric-api) |
-| 26.1.2 | NeoForge | 26.1.2.43-beta | net.neoforged.moddev 2.0.141 | 25 | Mojmap + Parchment (2026.04.20-26.1 once published) | [versions.neoforged.net/?nfV=26.1](https://versions.neoforged.net/?nfV=26.1) |
+| 1.21.1 | Fabric | fabric-loader 0.19.3 | fabric-loom 1.15.5, id `fabric-loom` (obfuscated pipeline) | 21 | Mojmap + Parchment 2024.11.17-1.21.1 | [meta.fabricmc.net/v2/versions/loader/1.21.1](https://meta.fabricmc.net/v2/versions/loader/1.21.1) |
+| 1.21.1 | Fabric API | fabric-api 0.116.13+1.21.1 | — (mod-dep, not plugin) | 21 | — | [meta.fabricmc.net/v2/versions/fabric-api](https://meta.fabricmc.net/v2/versions/fabric-api) |
+| 1.21.1 | NeoForge | 21.1.235 (latest of LTS line) | net.neoforged.moddev 2.0.141 | 21 | Mojmap (NeoForge default) + Parchment 2024.11.17-1.21.1 | [versions.neoforged.net/?nfV=21.1](https://versions.neoforged.net/?nfV=21.1) |
+| 26.2 | Fabric | fabric-loader 0.19.3 | fabric-loom 1.15.5, id `net.fabricmc.fabric-loom` (no-remap; MC 26+ is unobfuscated) | 25 | none (no mappings block allowed) | [meta.fabricmc.net/v2/versions/loader/26.2](https://meta.fabricmc.net/v2/versions/loader/26.2) |
+| 26.2 | Fabric API | fabric-api 0.154.0+26.2 | — | 25 | — | [meta.fabricmc.net/v2/versions/fabric-api](https://meta.fabricmc.net/v2/versions/fabric-api) |
+| 26.2 | NeoForge | 26.2.0.7-beta | net.neoforged.moddev 2.0.141 | 25 | Mojmap; Parchment falls back to 1.21.1 (none for 26.2 yet) | [versions.neoforged.net/?nfV=26.2](https://versions.neoforged.net/?nfV=26.2) |
+
+### Obfuscation boundary (MC 26+)
+
+MC 26.x+ ships **unobfuscated**. That flips three things on the Fabric
+side, all templated behind the per-MC `is_unobfuscated` flag:
+
+- **Plugin id:** `net.fabricmc.fabric-loom` (Loom's no-remap mode) instead
+  of the legacy `fabric-loom` id used for obfuscated MC (< 26).
+- **Mappings:** NO `mappings` block — configuring any mappings in
+  no-remap mode is a hard configuration error.
+- **Mod deps:** plain `implementation` for fabric-loader/fabric-api —
+  `modImplementation` is not registered in no-remap mode.
+
+On the NeoForge side, 26.x FML exposes the `FMLLoader.getCurrent()`
+instance API; 21.x only has static methods (templated behind
+`fml_has_getcurrent`).
+
+### Single plugin-version policy
+
+The templates pin ONE `fabric-loom` version and ONE ModDevGradle version
+in the root `build.gradle` plugins block for **all** MC lines — the Loom
+jar registers both plugin ids, and the per-line difference is which id a
+subproject applies (see the obfuscation boundary above), not the plugin
+version. Plugin versions are the single deliberate exception to the
+"all versions live in gradle.properties" rule: Gradle's `plugins {}` DSL
+needs literal versions, and `/modsmith:doctor` does not flag them.
 
 ### Companion versions (not version-axis but commonly needed)
 
 | Component | Version | Notes |
 | --- | --- | --- |
-| Gradle | 9.2 | Wrapper. Required for MDG 2.x. |
+| Gradle | 9.2.0 (GA) | Bundled wrapper pin. Required for MDG 2.x. Do not pin RCs — 9.x RCs surfaced hard errors (e.g. core-plugin `apply false`). |
+| fabric-loom | 1.15.5 | One version for all MC lines (see policy above). |
+| ModDevGradle (MDG) | 2.0.141 | One version for all MC lines, `net.neoforged.moddev`. |
 | Foojay resolver convention | 1.0.0 | `org.gradle.toolchains.foojay-resolver-convention`; auto-downloads JDK. |
-| MixinExtras (1.21.x line) | 0.4.3 | Bundled with NeoForge 21.1 and Fabric Loom; only declare if you use the API directly. |
-| MixinExtras (26.1 line) | 0.6.x | Bundled with NeoForge 26.1; native mixin support — no plugin block. |
+| MixinExtras (compile-time) | mixinextras-common 0.5.3 | Both loaders bundle MixinExtras at runtime; templates compile against 0.5.3. |
 | Parchment (1.21.1) | 2024.11.17-1.21.1 | `parchmentmc.org/docs/getting-started`. |
-| Parchment (26.1.2) | not yet published (as of 2026-05) | use Mojmap-only until released. |
-| ModDevGradle (MDG) | 2.0.141 (26.1) / 2.0.78 (1.21.1) | Loader-side gradle plugin, `net.neoforged.moddev`. |
-| fabric-loom | 1.10+ (26.1) / 1.7 (1.21.1) | Loader-side gradle plugin, `fabric-loom`. |
+| Parchment (26.2) | not yet published (as of 2026-07) | resolver falls back to the 1.21.1 artifact; Fabric 26.2 builds don't use Parchment at all (no mappings in no-remap mode). |
+| NeoForm (26.2) | 26.2-1 | Consumed by `:common` via MDG `neoFormVersion`. |
+| NeoForm (1.21.1) | 1.21.1-20240808.144430 | Timestamp-suffixed revision (older-line format). |
 
 ## How modsmith picks a row
 
 `/modsmith:init` asks for an MC version and accepts either a concrete
-pin (e.g. `26.1.2`) or one of these symbolic tokens:
+pin (e.g. `26.2`) or one of these symbolic tokens:
 
-| Token | Meaning | Resolves to (May 2026) |
+| Token | Meaning | Resolves to (July 2026) |
 | --- | --- | --- |
-| `latest` | Newest stable Minecraft release | `26.1.2` |
-| `recommended` | NeoForge's `recommended` channel | `21.1.215` (LTS line) |
+| `latest` | Newest stable Minecraft release | `26.2` |
+| `recommended` | NeoForge's `recommended` channel | LTS line (`1.21.1`) |
 | `lts` | Latest patch in the current LTS line | `1.21.1` |
 | `1.21` | Latest patch in minor `1.21.x` | `1.21.1` |
-| `1.21.1`, `26.1.2` | Exact pin | as written |
-| `next` | Latest including pre-releases | `26.1.3-pre1` or similar |
+| `1.21.1`, `26.2` | Exact pin | as written |
+| `next` | Latest including pre-releases | `26.3-pre1` or similar |
 
 `scripts/resolve-versions.sh` converts tokens to concrete pins by hitting
 the live APIs (next section). **Resolved tokens are written into
@@ -67,13 +96,13 @@ The matrix is a snapshot. When you need fresher data, query the source-of-truth 
   → newest first; pick `stable: true`.
 - **Fabric API (the mod, not the loader):**
   Maven Central or `https://maven.fabricmc.net/net/fabricmc/fabric-api/fabric-api/maven-metadata.xml`
-  → versions look like `0.145.4+26.1.2` (the `+`-tag is the MC version).
+  → versions look like `0.154.0+26.2` (the `+`-tag is the MC version).
   Pick the highest whose `+`-tag matches your MC version.
 
 ### NeoForge
 
 - **Index of all lines:** `https://versions.neoforged.net/index.json`
-  → JSON of every active MC line (`1.20.1`, `1.21.1`, `26.1`, …).
+  → JSON of every active MC line (`1.20.1`, `1.21.1`, `26.2`, …).
 - **Per-line:** `https://versions.neoforged.net/?nfV={line}` (HTML)
   → human-readable list of `latest`, `recommended`, `next` for that
   MC line. The JSON form lives at the maven metadata:
@@ -102,7 +131,7 @@ Before pinning a new row in this matrix, run:
 
 ```bash
 # Fabric side — sanity check that loader + API exist for this MC
-curl -s https://meta.fabricmc.net/v2/versions/loader/26.1.2 | jq '.[0]'
+curl -s https://meta.fabricmc.net/v2/versions/loader/26.2 | jq '.[0]'
 
 # NeoForge side — sanity check that the build exists
 curl -s https://maven.neoforged.net/releases/net/neoforged/neoforge/maven-metadata.xml \

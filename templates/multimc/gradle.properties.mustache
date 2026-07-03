@@ -12,9 +12,14 @@ license={{license}}
 authors={{authors}}
 description={{description}}
 
-# Top-level :common — pure Java, MC-agnostic. Toolchain set to the
-# highest Java version across all targeted MCs (so the bytecode runs on
-# every MC line's JVM).
+# Canonical MC key for repo-detection tooling: the FIRST resolved MC line.
+# The real per-line pins live below with the <key>_<mc_suffix> scheme.
+minecraft_version={{primary_mc_version}}
+
+# Top-level :common — pure Java, MC-agnostic. Toolchain set to the LOWEST
+# Java version across all targeted MCs: every per-MC line consumes
+# :common's bytecode, and a Java-21 line cannot load Java-25 classes.
+# (Newer JVMs run older bytecode; never the reverse.)
 java_version_shared={{java_version_shared}}
 
 # NeoForge loader version range (shared across all MC lines).

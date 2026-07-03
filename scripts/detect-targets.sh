@@ -138,6 +138,28 @@ prop_with_fallback() {
   return 0
 }
 
+# MC version property. The canonical key is `minecraft_version`; scaffolds
+# rendered by older modsmith templates wrote `mc_version`. Accept both,
+# preferring `minecraft_version`. Always returns 0.
+read_mc_prop() {
+  local file="$1"
+  local v
+  v=$(read_gradle_prop "$file" "minecraft_version")
+  [ -z "$v" ] && v=$(read_gradle_prop "$file" "mc_version")
+  printf '%s' "$v"
+  return 0
+}
+
+# Same dual-key lookup, with the per-subproject-then-root fallback walk.
+mc_prop_with_fallback() {
+  local sub_dir="$1"
+  local v
+  v=$(prop_with_fallback "$sub_dir" "minecraft_version")
+  [ -z "$v" ] && v=$(prop_with_fallback "$sub_dir" "mc_version")
+  printf '%s' "$v"
+  return 0
+}
+
 # ----------------------------------------------------------------------------
 # Detect subprojects from settings.gradle / settings.gradle.kts.
 # Captures everything in include('...') / include(":...") forms.
@@ -363,7 +385,7 @@ elif [ -f build.gradle.kts ]; then
   ROOT_BUILD="build.gradle.kts"
 fi
 
-ROOT_MC=$(read_gradle_prop "gradle.properties" "minecraft_version")
+ROOT_MC=$(read_mc_prop "gradle.properties")
 ROOT_JAVA=$(read_gradle_prop "gradle.properties" "java_version")
 if [ -n "$ROOT_JAVA" ]; then
   JAVA_TOOLCHAIN="$ROOT_JAVA"
@@ -526,7 +548,7 @@ elif [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
     sub_dir=$(subproject_dir ":fabric")
     build_file=$(subproject_build_file "$sub_dir")
     if [ -n "$build_file" ] && file_has_fabric_loom "$build_file"; then
-      mc=$(prop_with_fallback "$sub_dir" "minecraft_version")
+      mc=$(mc_prop_with_fallback "$sub_dir")
       lver=$(resolve_fabric_loader_version "$sub_dir")
       add_target "fabric" "$mc" "$lver" ":fabric" "$sub_dir"
     else
@@ -539,7 +561,7 @@ elif [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
     sub_dir=$(subproject_dir ":neoforge")
     build_file=$(subproject_build_file "$sub_dir")
     if [ -n "$build_file" ] && file_has_neoforge_moddev "$build_file"; then
-      mc=$(prop_with_fallback "$sub_dir" "minecraft_version")
+      mc=$(mc_prop_with_fallback "$sub_dir")
       lver=$(resolve_neoforge_version "$sub_dir")
       add_target "neoforge" "$mc" "$lver" ":neoforge" "$sub_dir"
     else
@@ -552,7 +574,7 @@ elif [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
     sub_dir=$(subproject_dir ":forge")
     build_file=$(subproject_build_file "$sub_dir")
     if [ -n "$build_file" ] && file_has_forge_gradle "$build_file"; then
-      mc=$(prop_with_fallback "$sub_dir" "minecraft_version")
+      mc=$(mc_prop_with_fallback "$sub_dir")
       lver=$(resolve_forge_version "$sub_dir")
       add_target "forge" "$mc" "$lver" ":forge" "$sub_dir"
     else
@@ -565,7 +587,7 @@ elif [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
     sub_dir=$(subproject_dir ":quilt")
     build_file=$(subproject_build_file "$sub_dir")
     if [ -n "$build_file" ] && file_has_quilt_loom "$build_file"; then
-      mc=$(prop_with_fallback "$sub_dir" "minecraft_version")
+      mc=$(mc_prop_with_fallback "$sub_dir")
       lver=$(resolve_quilt_version "$sub_dir")
       add_target "quilt" "$mc" "$lver" ":quilt" "$sub_dir"
     else
@@ -576,28 +598,28 @@ elif [ "$LOADER_SUB_COUNT" -ge 1 ] && [ -n "$SETTINGS_FILE" ]; then
 # Step 2: single-loader Fabric at root.
 elif [ -n "$ROOT_BUILD" ] && file_has_fabric_loom "$ROOT_BUILD"; then
   LAYOUT="single-loader"
-  mc=$(read_gradle_prop "gradle.properties" "minecraft_version")
+  mc=$(read_mc_prop "gradle.properties")
   lver=$(resolve_fabric_loader_version "")
   add_target "fabric" "$mc" "$lver" ":" ""
 
 # Step 3: single-loader NeoForge at root.
 elif [ -n "$ROOT_BUILD" ] && file_has_neoforge_moddev "$ROOT_BUILD"; then
   LAYOUT="single-loader"
-  mc=$(read_gradle_prop "gradle.properties" "minecraft_version")
+  mc=$(read_mc_prop "gradle.properties")
   lver=$(resolve_neoforge_version "")
   add_target "neoforge" "$mc" "$lver" ":" ""
 
 # Step 4: single-loader legacy Forge at root.
 elif [ -n "$ROOT_BUILD" ] && file_has_forge_gradle "$ROOT_BUILD"; then
   LAYOUT="single-loader"
-  mc=$(read_gradle_prop "gradle.properties" "minecraft_version")
+  mc=$(read_mc_prop "gradle.properties")
   lver=$(resolve_forge_version "")
   add_target "forge" "$mc" "$lver" ":" ""
 
 # Step 5: single-loader Quilt at root.
 elif [ -n "$ROOT_BUILD" ] && file_has_quilt_loom "$ROOT_BUILD"; then
   LAYOUT="single-loader"
-  mc=$(read_gradle_prop "gradle.properties" "minecraft_version")
+  mc=$(read_mc_prop "gradle.properties")
   lver=$(resolve_quilt_version "")
   add_target "quilt" "$mc" "$lver" ":" ""
 

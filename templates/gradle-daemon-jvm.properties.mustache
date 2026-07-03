@@ -1,0 +1,12 @@
+# Gradle daemon JVM criteria.
+#
+# This pins the JVM that RUNS Gradle — the one that loads the fabric-loom /
+# ModDevGradle plugin classes, whose published module metadata requires a
+# Java 21+ runtime. With this file present, Gradle auto-detects a matching
+# installed JDK for the build JVM even when JAVA_HOME points at an older
+# one. Compile/test toolchains are a separate mechanism: they are
+# provisioned per subproject by the foojay resolver convention, which can
+# NOT satisfy this launch-JVM requirement.
+#
+# Regenerate with: ./gradlew updateDaemonJvm --jvm-version={{java_version_daemon}}
+toolchainVersion={{java_version_daemon}}

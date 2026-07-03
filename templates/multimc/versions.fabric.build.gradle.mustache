@@ -1,17 +1,31 @@
 // :versions:{{mc_version}}:fabric — Fabric Loom for MC {{mc_version}}.
 //
 // Mixin refmap: ENABLED (Loom default). Do not disable.
+//
+// Obfuscation: rendered per MC line's obfuscation mode.
+// - MC < 26 (obfuscated): legacy `fabric-loom` plugin id, mappings block,
+//   `modImplementation` for mod deps.
+// - MC 26+ (unobfuscated): new `net.fabricmc.fabric-loom` plugin id (Loom
+//   no-remap mode) — NO mappings block (hard error otherwise), plain
+//   `implementation` for mod deps (`modImplementation` does not exist).
 plugins {
     id 'java-library'
+{{#is_unobfuscated}}
     id 'net.fabricmc.fabric-loom'
+{{/is_unobfuscated}}
+{{^is_unobfuscated}}
+    id 'fabric-loom'
+{{/is_unobfuscated}}
 }
 
 def modid              = project.findProperty('modid')
 def mcVersion          = project.findProperty('mc_version_{{mc_suffix}}')
 def fabricLoaderVer    = project.findProperty('fabric_loader_version_{{mc_suffix}}')
 def fabricApiVer       = project.findProperty('fabric_api_version_{{mc_suffix}}')
+{{^is_unobfuscated}}
 def parchmentMc        = project.findProperty('parchment_mc_version_{{mc_suffix}}')
 def parchmentVer       = project.findProperty('parchment_version_{{mc_suffix}}')
+{{/is_unobfuscated}}
 def javaVersion        = (project.findProperty('java_version_{{mc_suffix}}') as String).toInteger()
 
 java {
@@ -38,6 +52,7 @@ configurations {
 
 dependencies {
     minecraft        "com.mojang:minecraft:${mcVersion}"
+{{^is_unobfuscated}}
     if (parchmentMc != null && parchmentVer != null) {
         mappings loom.layered {
             officialMojangMappings()
@@ -48,6 +63,13 @@ dependencies {
     }
     modImplementation "net.fabricmc:fabric-loader:${fabricLoaderVer}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVer}"
+{{/is_unobfuscated}}
+{{#is_unobfuscated}}
+    // No mappings block: MC {{mc_version}} ships unobfuscated and Loom's
+    // no-remap mode rejects any mappings configuration.
+    implementation "net.fabricmc:fabric-loader:${fabricLoaderVer}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${fabricApiVer}"
+{{/is_unobfuscated}}
 
     // Pure-Java :common (MC-agnostic shared code) — depend on it as a normal project.
     implementation project(':common')
@@ -72,69 +94,74 @@ tasks.named('sourcesJar', Jar) {
     from(configurations.mcCommonResources)
 }
 
-// AT -> AW conversion (same shape as single-MC fabric template).
+// ---------------------------------------------------------------------------
+// AT -> AW conversion (same shape as the single-MC fabric template).
+//
+// Runs at CONFIGURATION time, not as a task: Loom reads `accessWidenerPath`
+// during Minecraft setup, so a task output can never satisfy it. The AW is
+// only generated/wired when the AT contains at least one effective
+// (non-comment) directive — the scaffold ships a comments-only AT, in which
+// case `accessWidenerPath` is simply not set.
+// ---------------------------------------------------------------------------
 def atFile = project(":versions:{{mc_version}}:common").file('src/main/resources/META-INF/accesstransformer.cfg')
 def awFile = layout.buildDirectory.file("generated/accesswideners/${modid}.accesswidener").get().asFile
 
-tasks.register('generateAccessWidener') {
-    description = "Generate Fabric accesswidener from versions/{{mc_version}}/common's accesstransformer.cfg"
-    group       = 'build'
+def atHasDirectives = atFile.exists() && atFile.readLines('UTF-8').any { rawLine ->
+    !rawLine.replaceFirst('#.*$', '').trim().isEmpty()
+}
 
-    inputs.file atFile
-    outputs.file awFile
+if (atHasDirectives) {
+    awFile.parentFile.mkdirs()
+    def lines = ['accessWidener v2 named', '']
+    atFile.readLines('UTF-8').eachWithIndex { rawLine, idx ->
+        def line = rawLine.replaceFirst('#.*$', '').trim()
+        if (line.isEmpty()) return
 
-    onlyIf { atFile.exists() }
-
-    doLast {
-        awFile.parentFile.mkdirs()
-        def lines = ['accessWidener v2 named', '']
-        atFile.readLines('UTF-8').eachWithIndex { rawLine, idx ->
-            def line = rawLine.replaceFirst('#.*$', '').trim()
-            if (line.isEmpty()) return
-
-            def parts = line.split(/\s+/)
-            if (parts.length < 2) {
-                logger.warn("[AT->AW] line ${idx + 1}: unparseable, skipping: ${rawLine}")
-                return
-            }
-
-            def directive = parts[0]
-            def clazz     = parts[1].replace('.', '/')
-            def member    = parts.length > 2 ? parts[2] : null
-
-            def isFinalStrip = directive.endsWith('-f')
-            def access       = isFinalStrip ? directive.substring(0, directive.length() - 2) : directive
-
-            if (access != 'public' && access != 'protected') {
-                logger.warn("[AT->AW] line ${idx + 1}: unsupported access '${access}', skipping")
-                return
-            }
-
-            if (member == null) {
-                lines << "accessible class ${clazz}"
-                if (isFinalStrip) lines << "extendable  class ${clazz}"
-                return
-            }
-
-            if (member.contains('(')) {
-                def methodName = member.substring(0, member.indexOf('('))
-                def descriptor = member.substring(member.indexOf('('))
-                lines << "accessible method ${clazz} ${methodName} ${descriptor}"
-                if (isFinalStrip) lines << "extendable  method ${clazz} ${methodName} ${descriptor}"
-            } else {
-                logger.warn("[AT->AW] line ${idx + 1}: field AT '${member}' on '${clazz}' has no type descriptor; AW requires one. Skipping.")
-            }
+        def parts = line.split(/\s+/)
+        if (parts.length < 2) {
+            logger.warn("[AT->AW] line ${idx + 1}: unparseable, skipping: ${rawLine}")
+            return
         }
-        awFile.text = lines.join('\n') + '\n'
-        logger.lifecycle("[AT->AW] wrote ${awFile} (${lines.size()} lines)")
+
+        def directive = parts[0]
+        def clazz     = parts[1].replace('.', '/')
+        def member    = parts.length > 2 ? parts[2] : null
+
+        def isFinalStrip = directive.endsWith('-f')
+        def access       = isFinalStrip ? directive.substring(0, directive.length() - 2) : directive
+
+        if (access != 'public' && access != 'protected') {
+            logger.warn("[AT->AW] line ${idx + 1}: unsupported access '${access}', skipping")
+            return
+        }
+
+        if (member == null) {
+            lines << "accessible class ${clazz}"
+            if (isFinalStrip) lines << "extendable  class ${clazz}"
+            return
+        }
+
+        if (member.contains('(')) {
+            def methodName = member.substring(0, member.indexOf('('))
+            def descriptor = member.substring(member.indexOf('('))
+            lines << "accessible method ${clazz} ${methodName} ${descriptor}"
+            if (isFinalStrip) lines << "extendable  method ${clazz} ${methodName} ${descriptor}"
+        } else {
+            logger.warn("[AT->AW] line ${idx + 1}: field AT '${member}' on '${clazz}' has no type descriptor; AW requires one. Skipping.")
+        }
     }
+    awFile.text = lines.join('\n') + '\n'
+    logger.lifecycle("[AT->AW] wrote ${awFile} (${lines.size()} lines)")
 }
 
 processResources {
-    dependsOn(configurations.mcCommonResources, tasks.named('generateAccessWidener'))
+    dependsOn(configurations.mcCommonResources)
     from(configurations.mcCommonResources)
-    from(awFile) {
-        into '/'
+    inputs.file(atFile)
+    if (atHasDirectives) {
+        from(awFile) {
+            into '/'
+        }
     }
 
     def expandProps = [ 'version': project.version ]
@@ -145,7 +172,9 @@ processResources {
 }
 
 loom {
-    if (atFile.exists()) {
+    // Only set when the AT has effective directives — Loom requires the AW
+    // file to exist at configuration time (see AT->AW block above).
+    if (atHasDirectives) {
         accessWidenerPath.set(awFile)
     }
 

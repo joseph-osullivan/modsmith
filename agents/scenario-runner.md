@@ -69,7 +69,11 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-25.jdk/Contents/Home
 ```
 
 (Substitute the actual task name + param name from the project's
-gradle build.)
+gradle build. The `JAVA_HOME` export exists because the Loom/MDG
+plugin classpath requires a Java 21+ launch JVM — any installed
+JDK 21+ works, and the export is unnecessary in repos that ship
+`gradle/gradle-daemon-jvm.properties`, which auto-selects one. See
+`references/landmines.md` "Java toolchain by MC version".)
 
 Use `run_in_background: true` for long-running scenarios and poll
 the output file until you see `BUILD SUCCESSFUL` or `BUILD FAILED`.

@@ -12,11 +12,14 @@ written against.
 mymod/
 ├─ build.gradle                    # root - subprojects {} block; the only file authoring shared config
 ├─ settings.gradle                 # includes :common, :fabric, :neoforge; pluginManagement {} for Loom + MDG
-├─ gradle.properties               # single source of truth for ALL versions
+├─ gradle.properties               # single source of truth for ALL versions (key: minecraft_version)
+├─ CLAUDE.md                       # project conventions (test tiers, version-bump rule, build commands)
+├─ .github/workflows/ci.yml        # CI: full ./gradlew build gate
 ├─ gradle/
 │  ├─ wrapper/
 │  │  ├─ gradle-wrapper.jar
 │  │  └─ gradle-wrapper.properties
+│  ├─ gradle-daemon-jvm.properties # build-JVM criteria (Java 21+ to run Gradle)
 │  └─ libs.versions.toml           # optional, version catalog
 ├─ gradlew
 ├─ gradlew.bat
@@ -92,7 +95,10 @@ mymod/
   primitive: `Block`/`Item` instance fields, recipe codecs, codec-backed
   data, gametest template logic, etc.
 - **Tier-1 JUnit tests** alongside production code in `common/src/test/`.
-  Pure Java — no MC bootstrap required for these.
+  Pure Java — no MC bootstrap required for these. The scaffold ships the
+  JUnit 5 wiring (junit-bom + jupiter + platform-launcher +
+  `useJUnitPlatform()`) and a sample test at
+  `common/src/test/java/<pkg>/unit/ScaffoldSmokeTest.java`.
 
 ### `fabric/`
 
@@ -226,10 +232,14 @@ references `versions/26.1.2/`. They only share the top-level `:common`.
 - **Top-level `common/`** — pure Java only. NO `net.minecraft.*`, NO
   `net.fabricmc.*`, NO `net.neoforged.*` imports. Shared utility code
   (math, codecs, data structures, business logic) that doesn't need
-  MC. Compiles against the **highest** Java toolchain among the
-  targeted MC versions, so its bytecode is forward-compatible with
-  every targeted MC line's JVM. `/modsmith:doctor` hard-fails on any
-  MC or loader import in this module.
+  MC. Compiles against the **lowest** Java toolchain among the
+  targeted MC versions (`java_version_shared`): every MC line consumes
+  `:common`'s bytecode, and an older JVM cannot load classes built for
+  a newer one — a Java-21 line cannot consume Java-25 bytecode, while
+  every newer JVM runs Java-21 bytecode fine. `/modsmith:doctor`
+  hard-fails on any MC or loader import in this module. Tier-1 JUnit
+  tests live in `common/src/test/java/` (wiring + a sample test ship
+  with the scaffold).
 
 - **`versions/<mc>/common/`** — shared code that **does** touch
   `net.minecraft.*` APIs for that specific MC version. Each MC line
@@ -279,27 +289,33 @@ between MC lines, every per-MC pin is suffixed with the MC version
 where dots become underscores:
 
 ```
-# Shared (top-level common)
-java_version_shared=25
+# Shared (top-level common) — MIN Java across the MC lines below
+java_version_shared=21
+
+# Canonical key for repo-detection tooling (first resolved MC line)
+minecraft_version=26.2
 
 # MC 1.21.1 line
 mc_version_1_21_1=1.21.1
 java_version_1_21_1=21
 neoform_version_1_21_1=1.21.1-20240808.144430
-neoforge_version_1_21_1=21.1.230
-fabric_loader_version_1_21_1=0.16.10
-fabric_api_version_1_21_1=0.111.0+1.21.1
+neoforge_version_1_21_1=21.1.235
+fabric_loader_version_1_21_1=0.19.3
+fabric_api_version_1_21_1=0.116.13+1.21.1
 parchment_mc_version_1_21_1=1.21.1
 parchment_version_1_21_1=2024.11.17
 
-# MC 26.1.2 line
-mc_version_26_1_2=26.1.2
-java_version_26_1_2=25
-neoform_version_26_1_2=26.1.2-20251001.123456
-neoforge_version_26_1_2=26.1.2.64-beta
-fabric_loader_version_26_1_2=0.18.6
-fabric_api_version_26_1_2=0.145.4+26.1.2
+# MC 26.2 line
+mc_version_26_2=26.2
+java_version_26_2=25
+neoform_version_26_2=26.2-1
+neoforge_version_26_2=26.2.0.7-beta
+fabric_loader_version_26_2=0.19.3
+fabric_api_version_26_2=0.154.0+26.2
 ```
+
+Note `java_version_shared` is the **minimum** of the per-MC
+`java_version`s (see "Layer responsibilities" above).
 
 Each subproject reads its own row via `findProperty`:
 
@@ -381,7 +397,11 @@ The render flow for multi-MC mode:
 | `templates/multimc/settings.gradle.mustache` | `settings.gradle` | once |
 | `templates/multimc/root.build.gradle.mustache` | `build.gradle` | once |
 | `templates/multimc/gradle.properties.mustache` | `gradle.properties` | once |
+| `templates/CLAUDE.md.mustache` | `CLAUDE.md` | once |
+| `templates/multimc/github/workflows/ci.yml.mustache` | `.github/workflows/ci.yml` | once |
+| `templates/gradle-daemon-jvm.properties.mustache` | `gradle/gradle-daemon-jvm.properties` | once |
 | `templates/multimc/common.build.gradle.mustache` | `common/build.gradle` | once |
+| `templates/ScaffoldSmokeTest.java.mustache` | `common/src/test/java/<pkg>/unit/ScaffoldSmokeTest.java` | once |
 | `templates/multimc/versions.common.build.gradle.mustache` | `versions/<mc>/common/build.gradle` | per MC |
 | `templates/multimc/versions.fabric.build.gradle.mustache` | `versions/<mc>/fabric/build.gradle` | per MC × Fabric |
 | `templates/multimc/versions.neoforge.build.gradle.mustache` | `versions/<mc>/neoforge/build.gradle` | per MC × NeoForge |
@@ -399,10 +419,11 @@ The render flow for multi-MC mode:
 | `templates/neoforge.mods.toml.mustache` | `versions/<mc>/neoforge/.../neoforge.mods.toml` | per MC × NeoForge |
 | `templates/neoforge-services.txt.mustache` | `versions/<mc>/neoforge/.../META-INF/services/<fqn>` | per MC × NeoForge |
 
-The seven `multimc/` templates are genuinely new; the rest are
-**reused** from the single-MC template set. The renderer flattens the
-per-MC context (e.g. `mc_version_26_1_2` → `mc_version`) before
-handing the template to the Mustache pass, so the Java + manifest
-templates that reference `{{mc_version}}` / `{{neoforge_version}}` /
-`{{java_version}}` resolve cleanly without needing separate per-MC
-copies.
+The `multimc/` templates are genuinely new; the rest are **reused**
+from the single-MC template set. The renderer flattens the per-MC
+context (e.g. `mc_version_26_2` → `mc_version`) before handing the
+template to the Mustache pass, so the Java + manifest templates that
+reference `{{mc_version}}` / `{{neoforge_version}}` /
+`{{java_version}}` — and the obfuscation-aware section flags
+`{{#is_unobfuscated}}` / `{{#fml_has_getcurrent}}` (true for MC ≥ 26)
+— resolve cleanly per MC line without needing separate per-MC copies.

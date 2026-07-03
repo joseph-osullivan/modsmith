@@ -12,14 +12,17 @@ authors={{authors}}
 description={{description}}
 
 # Minecraft + Java
-mc_version={{mc_version}}
+# (`minecraft_version` is the canonical key — tooling detects MC mod repos
+#  by grepping for it. Do not rename it to `mc_version`.)
+minecraft_version={{mc_version}}
 mc_version_range=[{{mc_version}},)
 java_version={{java_version}}
 
 # NeoForm (the common-side decompiled vanilla MC artifact published by NeoForged).
-# Format is <mc_version>-<neoform_revision>. The revision is updated by NeoForged
-# independently of the NF runtime; see https://projects.neoforged.net/neoforged/neoform
-neoform_version={{mc_version}}-1
+# Format is <mc_version>-<neoform_revision>, where the revision is either a
+# small integer (newer lines) or a timestamp (older lines). Resolved from
+# https://maven.neoforged.net/releases/net/neoforged/neoform/ at scaffold time.
+neoform_version={{neoform_version}}
 
 # NeoForge runtime
 neoforge_version={{neoforge_version}}
@@ -29,9 +32,15 @@ neoforge_loader_version_range=[4,)
 fabric_loader_version={{fabric_loader_version}}
 fabric_api_version={{fabric_api_version}}
 
+{{#has_parchment}}
 # Parchment mappings (used by both loaders for parameter names + javadocs).
 parchment_mc_version={{parchment_mc_version}}
 parchment_version={{parchment_version}}
+{{/has_parchment}}
+{{^has_parchment}}
+# Parchment mappings: none resolved for this MC — builds use Mojmap only.
+# To add them later, set parchment_mc_version= and parchment_version= here.
+{{/has_parchment}}
 
 # Gradle
 org.gradle.jvmargs=-Xmx3G
