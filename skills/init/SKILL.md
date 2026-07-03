@@ -459,7 +459,7 @@ In multi-MC mode: if any per-MC row in the translated vars.json has
 build will fail until the placeholder is replaced — surface that as
 a likely cause when the placeholder flag is set.
 
-### Both modes
+### Expectations
 
 This first build can take 5-10 minutes (downloading vanilla MC,
 NeoForge, Fabric Loom mappings). If it succeeds, the scaffold is
