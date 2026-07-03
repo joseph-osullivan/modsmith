@@ -32,6 +32,9 @@
 #   {
 #     "modid": "testmod", "mod_name": "Test Mod", ...,
 #     "mc_version": "26.2", "java_version": "25",
+#     "java_version_daemon": "25",   // JVM that RUNS Gradle (>= 21 always —
+#                                    // Loom/MDG plugin jars require it);
+#                                    // written to gradle/gradle-daemon-jvm.properties
 #     "neoform_version": "26.2-1",
 #     "fabric_loader_version": "0.19.3", "fabric_api_version": "0.154.0+26.2",
 #     "neoforge_version": "26.2.0.7-beta",
@@ -42,9 +45,10 @@
 #     "fml_has_getcurrent": true,     // MC >= 26: FMLLoader.getCurrent() exists
 #     "loaders": ["fabric","neoforge"]
 #   }
-#   (`has_parchment`, `is_unobfuscated`, `fml_has_getcurrent`, and
-#    `neoform_version` are derived from `mc_version` by the renderer when
-#    absent, so pre-v0.2.1 hand-written vars files still render.)
+#   (`has_parchment`, `is_unobfuscated`, `fml_has_getcurrent`,
+#    `neoform_version`, and `java_version_daemon` are derived by the
+#    renderer when absent, so pre-v0.2.1 hand-written vars files still
+#    render.)
 #
 # vars.json (multi-MC schema). Produced by scripts/_init_translate_resolver.py:
 #   {
@@ -52,6 +56,9 @@
 #     "java_version_shared": "21",   // MIN Java across MC lines: every line
 #                                    // consumes :common's bytecode and an older
 #                                    // JVM cannot load newer bytecode
+#     "java_version_daemon": "25",   // MAX(21, per-MC java_version): the JVM
+#                                    // that RUNS Gradle; written to
+#                                    // gradle/gradle-daemon-jvm.properties
 #     "primary_mc_version": "26.2",  // first MC line; written to
 #                                    // gradle.properties as minecraft_version=
 #                                    // for repo-detection tooling
@@ -420,6 +427,20 @@ done
 # Preserve the executable bit on gradlew (cp inherits source perms on most
 # platforms, but force it here so a chmod-stripped source still works).
 chmod +x "$OUT_DIR/gradlew"
+
+# ---------------------------------------------------------------------------
+# Daemon JVM criteria — gradle/gradle-daemon-jvm.properties (both modes).
+# The Loom / ModDevGradle plugin classpath requires a Java 21+ JVM to RUN
+# Gradle; the foojay convention only provisions compile/test toolchains and
+# cannot satisfy that. With this file, Gradle auto-selects a matching
+# installed JDK for the build JVM even when JAVA_HOME points at an older one.
+# ---------------------------------------------------------------------------
+
+if ! render "$TEMPLATES_DIR/gradle-daemon-jvm.properties.mustache" \
+  "$OUT_DIR/gradle/gradle-daemon-jvm.properties"; then
+  warn "daemon JVM criteria render failed"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Post-check: assert no `{{name}}` placeholders survived in rendered files.

@@ -70,6 +70,16 @@ Top-level (multi-MC only):
                             Java-21 line cannot consume Java-25 classes) —
                             so :common must compile at the lowest Java
                             among the targeted MC lines.
+
+Top-level (both modes):
+    java_version_daemon   = MAX(21, java_version[s]). The JVM that RUNS
+                            Gradle: the fabric-loom / ModDevGradle plugin
+                            jars require a Java 21+ runtime on the
+                            buildscript classpath, independent of the
+                            compile toolchains. Rendered into
+                            gradle/gradle-daemon-jvm.properties so Gradle
+                            auto-selects a matching installed JDK even
+                            when JAVA_HOME points at an older one.
     primary_mc_version    = first row's mc_version. Written into
                             gradle.properties as `minecraft_version=` so
                             repo-detection tooling (which greps that key)
@@ -238,6 +248,9 @@ def translate(resolver_doc: dict, identity: dict) -> dict:
 
     out = _identity_fields(identity, selected_loaders)
     out["java_version_shared"] = java_version_shared
+    # The Gradle-launching JVM must satisfy the Loom/MDG plugin jars'
+    # >= 21 runtime constraint regardless of any MC line's toolchain.
+    out["java_version_daemon"] = max(21, max(r["java_version"] for r in mc_rows))
     out["primary_mc_version"] = mc_rows[0]["mc_version"]
     out["mc_versions"] = mc_rows
     return out
@@ -293,6 +306,9 @@ def translate_single(
         "fml_has_getcurrent",
     ):
         out[key] = row[key]
+    # The Gradle-launching JVM must satisfy the Loom/MDG plugin jars'
+    # >= 21 runtime constraint regardless of the MC line's toolchain.
+    out["java_version_daemon"] = max(21, row["java_version"])
     return out
 
 

@@ -9,10 +9,10 @@ fields are merged on top (overlay) so per-MC × per-loader contexts can
 override or add fields without mutating the global vars file.
 
 `package_base_path`, `mc_version_range`, `neoforge_loader_version_range`,
-`neoform_version`, `has_parchment`, `is_unobfuscated`, and
-`fml_has_getcurrent` are derived if not already present (so hand-written
-vars files that predate those keys still render; the init skill's
-translator normally supplies them explicitly).
+`neoform_version`, `has_parchment`, `is_unobfuscated`,
+`fml_has_getcurrent`, and `java_version_daemon` are derived if not
+already present (so hand-written vars files that predate those keys still
+render; the init skill's translator normally supplies them explicitly).
 
 Exit codes:
   0 — rendered
@@ -64,6 +64,18 @@ def _derive(ctx: dict) -> dict:
             ctx["is_unobfuscated"] = mc_major >= 26
         if "fml_has_getcurrent" not in ctx:
             ctx["fml_has_getcurrent"] = mc_major >= 26
+    if "java_version_daemon" not in ctx:
+        # The JVM that RUNS Gradle must satisfy the Loom/MDG plugin jars'
+        # >= 21 runtime constraint, whatever the compile toolchains are.
+        candidates: list[int] = []
+        rows = ctx.get("mc_versions")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("java_version"):
+                    candidates.append(int(row["java_version"]))
+        if ctx.get("java_version"):
+            candidates.append(int(ctx["java_version"]))
+        ctx["java_version_daemon"] = max([21, *candidates])
     return ctx
 
 
