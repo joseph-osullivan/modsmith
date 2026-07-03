@@ -24,6 +24,24 @@ if [ -z "$RUN_DIR" ]; then
   exit 0
 fi
 
+# Only log into an ACTIVE Lane 2 run. Archived runs (stamped ABANDONED,
+# missing state.json, or current_phase=complete) must not accumulate log
+# lines — otherwise any subagent stopping while cwd is the repo appends
+# noise into historical run dirs (field-observed 2026-07).
+STATE="$RUN_DIR/state.json"
+if [ ! -f "$STATE" ] || [ -f "$RUN_DIR/ABANDONED.md" ]; then
+  exit 0
+fi
+PHASE=""
+if command -v jq >/dev/null 2>&1; then
+  PHASE=$(jq -r '.current_phase // ""' "$STATE" 2>/dev/null)
+else
+  PHASE=$(sed -n 's/.*"current_phase"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$STATE" | head -1)
+fi
+if [ -z "$PHASE" ] || [ "$PHASE" = "complete" ]; then
+  exit 0
+fi
+
 LOG="$RUN_DIR/subagent-log.jsonl"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
