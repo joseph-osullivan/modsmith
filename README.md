@@ -6,7 +6,7 @@ Scaffolds multi-loader (Fabric + NeoForge) mods, orchestrates the full dev cycle
 
 ## Status
 
-**v0.1.1 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.1.1 adds **multi-MC overlay scaffolding** (one repo targeting multiple Minecraft versions with shared common code). Distribution via the official Claude Code marketplace will follow real-world migration validation.
+**v0.2.0 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.2.0 rebuilds `/modsmith:develop` as a **two-lane workflow**: Lane 1 (default) is a lightweight branch → failing test → fix → gate → PR loop with no ceremony; Lane 2 (opt-in) keeps the full orchestration (architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff) for genuinely multi-subsystem features. It also ships a compile-probe API oracle (`scripts/symbol-check.sh`), a verify-protocol + staleness banner for the landmine index, and arena-isolation GameTest rules distilled from field flake hunts. Distribution via the official Claude Code marketplace will follow real-world migration validation.
 
 ## What it does
 
@@ -44,7 +44,7 @@ claude plugin link ./modsmith
 | Skill | Purpose |
 |---|---|
 | **`/modsmith:init <modid>`** | Scaffold a new multi-loader mod. Interactive: asks for mod ID, package, loaders, MC versions. Accepts `latest`, `lts`, `recommended`, `next`, partial pins (`1.21` → `1.21.X`), and exact pins. **Multi-MC mode:** pick 2+ MC versions and `init` produces the overlay layout (`common/` + `versions/<mc>/{common,fabric,neoforge}/`) so one repo targets multiple MC lines. Renders templates and runs `./gradlew build` as a green-build proof. |
-| **`/modsmith:develop <task>`** | Run the full feature dev cycle. Phases: 0 bootstrap → 1 architect → 2 research → 3 plan → 4 build → 5 doctor → 6 handoff (dev server + background gametest/log-watcher/reviewer) → 7 kick-back loop → 8 PR. Detects single-loader vs multi-loader vs monolith repos. |
+| **`/modsmith:develop <task>`** | Two-lane dev workflow. **Lane 1 (default):** branch → failing test → fix → gate → PR — no run dir, no checkpoint file; evidence rules distilled from two dozen archived field runs. **Lane 2 (opt-in, 3+ disjoint subtasks):** 0 bootstrap → 1 architect → 2 research → 3 plan → 4 build (parallel worktrees) → 5 doctor → 6 handoff (dev server + background gametest/log-watcher/reviewer) → 7 kick-back loop → 8 PR. Detects single-loader vs multi-loader vs monolith repos. |
 | **`/modsmith:doctor`** | Audit the current mod for multi-loader hygiene. Hard-fails on `common/` → loader imports, missing platform impls, missing `META-INF/services/` registrations, `mods.toml` (old name) presence, refmap/AT misconfigs, modid mismatches across loaders. Warns on stale pinned versions, missing `pack.mcmeta`, AT/AW parity drift. Runs as a phase gate inside `:develop`. |
 
 ## Architecture
@@ -53,7 +53,7 @@ claude plugin link ./modsmith
 modsmith/
 ├── .claude-plugin/plugin.json     ← plugin manifest
 ├── skills/
-│   ├── develop/                   ← the orchestrator (8 phases)
+│   ├── develop/                   ← two-lane workflow (Lane 2 = 8 phases)
 │   ├── init/                      ← greenfield scaffolding
 │   └── doctor/                    ← multi-loader audit
 ├── agents/                        ← 8 specialists

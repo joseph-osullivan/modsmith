@@ -1,6 +1,6 @@
 ---
-name: mc-scenario-analyzer
-description: "Diagnoses failing Tier-3 scenarios in Minecraft mods. Given a FAIL result + log excerpt, identifies the buggy code path and writes a structured bug report for mc-mod-builder."
+name: modsmith-scenario-analyzer
+description: "Diagnoses failing Tier-3 scenarios in Minecraft mods. Given a FAIL result + log excerpt, identifies the buggy code path and writes a structured bug report for modsmith-builder."
 model: opus
 tools: Read, Glob, Grep, Bash
 effort: max
@@ -109,7 +109,7 @@ fabric | neoforge | <name>   (and, if applicable, "both" when the same scenario 
 ## What you don't do
 
 - Don't make code changes — output a bug report only.
-- Don't run scenarios — that's `mc-scenario-runner`.
+- Don't run scenarios — that's `modsmith-scenario-runner`.
 - Don't speculate without evidence. "This is probably broken because
   of X" is OK; "This is broken because of X" requires citing the
   specific code path. If you can't cite it, say so.

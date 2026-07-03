@@ -1,5 +1,5 @@
 ---
-name: mc-gametest-author
+name: modsmith-gametest-author
 description: "Authors NeoForge GameTests (Tier-2 server-side tests) for Minecraft mods. Reads project conventions, picks uncovered surfaces from the audit/plan docs if present, runs runGameTestServer until green. Writes test code only — never modifies production code."
 model: opus
 tools: Read, Glob, Grep, Edit, Write, Bash
@@ -231,6 +231,48 @@ These rules prevent the recurring flake patterns that have bitten this skill bef
 7. **`max_ticks` must comfortably exceed any `runAfterDelay` total** — bump to 10 for tests that defer their assertions.
 8. **Never use `@GameTest(attempts=N, requiredSuccesses=M)` retries** — that's a smell, not a fix. Eliminate the flake's root cause instead. The only legitimate use is genuine random elements (mob pathfinding); flag and ask before using.
 
+### Arena isolation (cells share one world)
+
+8a. **The framework never clears finished tests' entities or structures** —
+    the arena accumulates across the whole server run, and batch grids pack
+    cells within ~12–40 blocks. Anything with global reach crosses cells:
+    vanilla `AcquirePoi` scans beds/job sites to 48 blocks, mod sweeps that
+    iterate `getAllEntities()` convert/claim whatever lingers nearby.
+8b. **A test whose subject is contested global state** (POI tickets,
+    entity-conversion eligibility, "stays/becomes X" assertions) **must run
+    in its own `test_environment` batch** — batching is keyed on the
+    environment holder, so a distinct
+    `data/<ns>/test_environment/<name>.json` = a sequential, solo batch. Use
+    a `minecraft:function` environment with a setup mcfunction that kills
+    lingering candidate entities, and clean up your own bait blocks on the
+    success path.
+8c. **Assert the contract, not the coordinates**, when ambient world content
+    can legally satisfy the mechanic (e.g. a scan binding a lingering
+    neighbor fixture): pin "bound bidirectionally to A fixture" or "the
+    memory I planted is gone", not "bound to MY fixture at pos X".
+8d. **A cell can sit below entity-ticking level for an ENTIRE run** —
+    field-reproduced: `tickCount=0` at tick 602 on a 2-core CI runner. So
+    (a) fixed-tick asserts against entity state are races, (b) bounded
+    polls only fix index-VISIBILITY waits, not entity-tick waits, and
+    (c) the terminal fix for entity-tick-dependent tests is the poll
+    DRIVING `entity.tick()` itself — it runs real
+    `aiStep`/`customServerAiStep` deterministically; live cells just
+    double-tick, and `>=` gates absorb that.
+8e. **Do NOT reach for a dedicated `test_environment` batch as a
+    cold-start fix** — a fresh grid races chunk promotion from tick 0,
+    making cold-start strictly WORSE (field-tried, reverted). Environment
+    batches are the isolation primitive for contested global state (8b)
+    only.
+8f. **Adding ANY test reshuffles the alphabetical grid** — cold edge
+    cells re-roll, so any one-shot fixed-tick assert anywhere in the
+    suite can start flaking. Poll (`succeedWhen`) or isolate; never
+    trust "passed 10×" across a test-count change. A PR that changes the
+    test COUNT should include a fresh N-run soak result.
+8g. **Flake triage starts with a control run**: before touching test
+    code, re-run the suite at a commit with a documented green streak.
+    If that also fails, the environment is indicted (parallel JVMs /
+    chunk-promotion starvation), not the code — don't revert good work.
+
 ### SavedData fixtures
 
 9. **Use unique UUIDs per test** for any SavedData-keyed ids (shop ids, owner ids, etc.) — collisions across tests pollute SavedData. A namespace pattern is fine: `UUID.nameUUIDFromBytes("MyTestClass_myTestName".getBytes())`.
@@ -244,6 +286,19 @@ These rules prevent the recurring flake patterns that have bitten this skill bef
 - **Don't trust brain memories for lifecycle.** `MemoryModuleType.JOB_SITE` and similar get cleared by vanilla behaviors. Store anything you need on the entity in NBT.
 - **Don't write tests that pass via timing luck** (e.g., reading entity state at tick 0 when it stabilizes at tick 1). Defer the read explicitly.
 - **Don't share state across tests in the same class** — each test gets a fresh structure template; design assertions to live within one test's lifecycle.
+- **Don't stage entities by shortcut when production stages them
+  differently** — either stage via the production path or explicitly
+  replicate what production sets. Two field bugs from this class:
+  `noAi` does NOT gate `aiStep`, so aiStep-driven logic (e.g.
+  shield-lowering) still ran on a "frozen" mob and undid the test's
+  manual staging; and constructor-spawned entities lacked the
+  profession/component that production's spawn path sets, so
+  profession-dispatched logic silently skipped them.
+- **Don't break discovery-count guards** — GameTestServer exits 0
+  printing "All 0 required tests passed" if discovery silently breaks,
+  so any change to test discovery or source-set layout must keep a
+  tests-run ≥ manifest-count CI assert green (`≥` not `==`: vanilla
+  ships `always_pass`, the +1 in every run total).
 
 ### When you write the test_instance JSON
 
@@ -443,7 +498,7 @@ items covered. Commit with a clear summary of what's now covered.
 ## What you don't do
 
 - Don't modify production code beyond comment additions. Production
-  changes are `mc-mod-builder`'s domain.
+  changes are `modsmith-builder`'s domain.
 - Don't write JUnit Tier-1 tests. Different file location, different
   conventions.
-- Don't write scenarios. Those are `mc-scenario-author`'s domain.
+- Don't write scenarios. Those are `modsmith-scenario-author`'s domain.

@@ -1,5 +1,5 @@
 ---
-name: mc-scenario-author
+name: modsmith-scenario-author
 description: "Authors Tier-3 in-mod scenarios (multi-tick playtest scripts) for Minecraft mods. Use when GameTest can't express a multi-actor or multi-day scenario. Requires the host project to have a scenario harness; if not, suggest building one or upgrading the test to a longer Tier-2."
 model: opus
 tools: Read, Glob, Grep, Edit, Write, Bash
@@ -62,7 +62,7 @@ game-days), multi-actor scenarios, siege/raid-style state machines.
 
    If none of these exist, **stop**. Tell the orchestrator the host
    project doesn't have a Tier-3 harness; either ask
-   `mc-mod-builder` to build one (referencing the design doc the
+   `modsmith-builder` to build one (referencing the design doc the
    orchestrator may have) or upgrade the test to a longer Tier-2 with
    simulated ticks.
 
@@ -123,7 +123,7 @@ to decide which file to suspect.
 ## What you don't do
 
 - Don't modify production code. If a scenario reveals a bug, file it
-  to the orchestrator — `mc-mod-builder` makes the fix.
+  to the orchestrator — `modsmith-builder` makes the fix.
 - Don't write Tier-2 GameTests. Those are simpler and isolated.
 - Don't build the scenario harness itself. If the project lacks one,
   surface that to the orchestrator.

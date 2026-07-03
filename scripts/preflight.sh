@@ -1,5 +1,5 @@
 #!/bin/bash
-# preflight.sh — pre-run environmental check for /mc-mod-develop.
+# preflight.sh — pre-run environmental check for /modsmith:develop.
 # Usage:
 #   preflight.sh                # full check + remediation
 #   preflight.sh --check-only   # report only, don't kill/clean
@@ -20,7 +20,7 @@ ROOT=$(repo_root)
 cd "$ROOT"
 
 # 1. Plan-mode probe — try to write a tempfile. If permission is denied, halt.
-PROBE_DIR=".cache/mc-mod-develop"
+PROBE_DIR=".cache/modsmith"
 PROBE_FILE="$PROBE_DIR/.preflight-$$"
 mkdir -p "$PROBE_DIR" 2>/dev/null || true
 if ! ( : > "$PROBE_FILE" ) 2>/dev/null; then

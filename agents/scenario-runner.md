@@ -1,5 +1,5 @@
 ---
-name: mc-scenario-runner
+name: modsmith-scenario-runner
 description: "Drives a Minecraft mod's scenario harness for given scenario ids. Captures JSON reports + log excerpts + exit codes, returns structured results."
 model: haiku
 tools: Read, Bash, Glob, Grep
@@ -110,8 +110,8 @@ an aggregate `X/N passed` line at the top. When `layout == "multiloader"`, alway
 
 ## What you don't do
 
-- Don't write or modify scenarios — that's `mc-scenario-author`.
+- Don't write or modify scenarios — that's `modsmith-scenario-author`.
 - Don't fix bugs found by failed scenarios — that's the orchestrator's
-  job to route to `mc-mod-builder`.
+  job to route to `modsmith-builder`.
 - Don't try to reason about why something failed — that's
-  `mc-scenario-analyzer`. Stay mechanical.
+  `modsmith-scenario-analyzer`. Stay mechanical.

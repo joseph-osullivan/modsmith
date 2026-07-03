@@ -14,9 +14,28 @@ symbol / error fragment BEFORE spawning a researcher. If it's listed,
 apply the fix; if not, escalate as usual and *append the answer here*
 once resolved.
 
+**Verify protocol — entries are leads, not gospel.** Every entry was true
+when written; nothing here re-verifies itself. Before building on an
+entry from a different MC version than the host project's (check
+`gradle.properties` first), or on any entry whose claim is
+load-bearing for your change, probe it: `scripts/symbol-check.sh
+[--subproject :name] <project> < probe.java` compiles a throwaway class
+against the real classpath — the only trustworthy oracle. Entries can rot
+*within* a version too (NeoForge patches change between loader builds);
+when you find a stale entry, correct it IN PLACE with a dated note rather
+than deleting — the correction teaches the file's fallibility. If you
+find a second within-version stale entry, that's the pre-agreed trigger
+to build a sweep mode into symbol-check that re-probes every entry
+carrying a verify expression.
+
+**Compile-clean ≠ correct.** A symbol probe verifies existence and
+signature, not behavior. Entries tagged *(runtime-semantic)* describe
+code that compiles fine and misbehaves — those need a GameTest through
+the real trigger path or a decompiled-source read, not a probe.
+
 **Format:** one heading per affected MC version OR landmine category, one
-bullet per rename/removal/gotcha. Keep entries to ≤2 lines. Link the run
-that discovered it.
+bullet per rename/removal/gotcha. Keep entries to ≤2 lines where
+possible. Note how it was verified (probe / decompile / field bug).
 
 ---
 
@@ -189,6 +208,96 @@ Fabric + NeoForge.
 ---
 
 ## Minecraft 26.1 (NeoForge 26.1.x)
+
+- **`CompoundTag.getCompound(String)` returns `Optional<CompoundTag>` in
+  26.1.** Use `getCompoundOrEmpty` for the old always-a-tag behavior.
+  Probe-verified 2026-07.
+
+- **`getOrThrow` inside `Optional.map` throws PAST a downstream
+  `.orElse(null)`.** A missing registry entry crashes every call site
+  despite the null-default. Use `flatMap(reg -> reg.get(key))` chains
+  that stay in Optional-land. Probe-verified 2026-07. *(runtime-semantic)*
+
+- **`LivingDeathEvent` is cancellable in 26.1** and fires post-mitigation,
+  AFTER vanilla's in-hand totem check — the correct hook for totem-like
+  death prevention (cancel + `setHealth`). `LivingIncomingDamageEvent`
+  fires PRE-armor; lethality math there overcounts. Probe + field bug,
+  2026-07. *(runtime-semantic)*
+
+- **`Player.PERSISTED_NBT_TAG` ("PlayerPersisted") is clone-copied by the
+  patched `ServerPlayer.restoreFrom`** — the supported place to stash data
+  that must survive death. Verified in 26.1.2 bytecode. If you both write
+  it on death and read-clear it on clone, clear BOTH sides or you get
+  dupes.
+
+- **`RegistryOps` come from
+  `registryAccess().createSerializationContext(NbtOps.INSTANCE)`** in
+  26.1 — not from a static `RegistryOps.create` recipe you may remember.
+  Probe-verified 2026-07.
+
+- **`MinecraftServer#getProfileCache()` is gone in 26.1.** Online players:
+  `getPlayerList().getPlayer(uuid)`; offline: keep your own persisted
+  name map — there is no vanilla offline cache accessor anymore.
+
+- **`GameTestHelper.makeMockPlayer(GameType)` returns `Player`, NOT
+  `ServerPlayer`** — don't cast; use a real connected fake player helper
+  when server-player-only surfaces are needed. Probe-verified 2026-07.
+
+- **GameTest batching is keyed on the test_environment holder** —
+  distinct `data/<ns>/test_environment/<name>.json` = a sequential, solo
+  batch (≤50 tests per batch otherwise). This is the isolation primitive
+  for tests contesting global state — and an anti-pattern for cold-start
+  (see `references/gametest-rules.md`). Decompile-verified.
+
+- **The GameTest framework NEVER clears finished tests' entities or
+  structures** — the arena accumulates across the whole server run;
+  batch grids pack cells within ~12–40 blocks; vanilla `AcquirePoi`
+  scans to 48 blocks. See the arena-isolation rules in
+  `references/gametest-rules.md`. Field bug, root-caused 2026-07.
+  *(runtime-semantic)*
+
+- **GameTest run totals include vanilla `always_pass`** — reported count
+  is your test count +1; derived-count assertions must use `≥`, not
+  `==`. Corollary: GameTestServer exits 0 printing "All 0 required tests
+  passed" when discovery silently breaks — pair discovery/source-set
+  changes with a tests-run ≥ manifest-count assert. *(runtime-semantic)*
+
+- **NeoForge 26.1 GLMs have NO `global_loot_modifiers.json` index.** The
+  loot-modifier manager auto-discovers each modifier from its own JSON
+  under `data/<ns>/loot_modifiers/`. Shipping the old index file makes
+  26.1 try to parse it as a modifier and reject it, which can block ALL
+  modifiers from loading. Field bug.
+
+- **`Mob#setNoAi(true)` does NOT gate `aiStep()`** — noAi gates the
+  brain/goal tick, but `aiStep`/`customServerAiStep` logic still runs
+  (e.g. shield-lowering). Stage test entities via the production path
+  instead of assuming noAi freezes them. Field bug, 2026-07.
+  *(runtime-semantic)*
+
+- **Two listeners on the same NeoForge event have NO defined relative
+  order** unless explicit priorities are set. Never read state another
+  same-event listener writes in the same tick and assume it ran first —
+  keep your own cursor. Field bug. *(runtime-semantic)*
+
+- **`finalizeSpawn` does NOT run on `addFreshEntity`** — mobs spawn
+  without their equipment/AI init. Trigger the production spawn path or
+  call the init explicitly. Field bug. *(runtime-semantic)*
+
+- **`Container#slotsChanged` never fires for `ItemStackHandler`-backed
+  slots** — capability-based inventories bypass it. Field bug.
+  *(runtime-semantic)*
+
+- **`ServerLevel.sendParticles` (7-arg) silently drops particles beyond
+  ~32 blocks of each player** unless the overrideLimiter arg is set.
+  Field bug. *(runtime-semantic)*
+
+- **Vanilla brain activities (e.g. REST) override `goalSelector` goals on
+  Villager subclasses** — a goal that compiles but won't run. Field bug.
+  *(runtime-semantic)*
+
+- **`findNearestMapStructure` returns y=0 positions and takes a
+  CHUNKS-denominated radius**; `getHeight` on unloaded chunks returns
+  `minBuildHeight`. Field bug (three stacked). *(runtime-semantic)*
 
 - **`/time add N` interprets `N` as DAYS, not ticks in 26.1.** `/time add 24000`
   jumps ~24,000 MC days (576M ticks), not one day. Use `/time set N` (still

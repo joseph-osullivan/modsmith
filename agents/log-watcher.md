@@ -1,5 +1,5 @@
 ---
-name: log-watcher
+name: modsmith-log-watcher
 description: "Tails the dev server play-session log against expectations; reports deviations."
 model: sonnet
 tools: Read, Bash, Write
