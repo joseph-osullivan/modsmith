@@ -10,8 +10,14 @@
 // per-MC versions are resolved by each leaf subproject via the
 // MC-suffixed gradle.properties keys (e.g. `neoforge_version_26_1_2`).
 
+// NOTE: core Gradle plugins (java-library, idea, ...) must NOT be listed
+// with `apply false` — on Gradle 9+ that is a hard error. Subprojects apply
+// core plugins directly via `apply plugin:`. The Loom jar registers BOTH
+// plugin ids (legacy 'fabric-loom' for obfuscated MC lines,
+// 'net.fabricmc.fabric-loom' for unobfuscated 26.x+); declaring one marker
+// here puts the jar on the classpath so each per-MC fabric subproject can
+// apply whichever id fits its MC line.
 plugins {
-    id 'java-library' apply false
     id 'idea'
     id 'net.fabricmc.fabric-loom' version '1.15.5' apply false
     id 'net.neoforged.moddev'    version '2.0.141' apply false
@@ -26,6 +32,14 @@ idea {
 }
 
 subprojects {
+    // The intermediate container projects (:versions and :versions:<mc>)
+    // exist only to nest paths. They must not get the java plugin — that
+    // would produce junk jars (versions-x.y.z.jar etc.) on `./gradlew build`.
+    // Containers are the only subprojects with children; skip them.
+    if (!project.childProjects.isEmpty()) {
+        return
+    }
+
     apply plugin: 'java-library'
 
     def modid             = project.findProperty('modid')
@@ -33,7 +47,19 @@ subprojects {
     def modVersion        = project.findProperty('mod_version')
     def modGroup          = project.findProperty('group')
 
-    group   = modGroup
+    // Every subproject must have DISTINCT (group, name) module coordinates.
+    // Gradle names modules by directory basename, so :common,
+    // :versions:<mcA>:common and :versions:<mcB>:common would otherwise all
+    // publish as <group>:common — and `project(':common')` inside a per-MC
+    // common then resolves to the per-MC project ITSELF, yielding a
+    // compileJava self-cycle on plain `./gradlew build`. Suffix the group
+    // with the MC segment for everything under :versions.
+    if (project.path.startsWith(':versions:')) {
+        def mcSegment = project.path.split(':')[2].replace('.', '_').replace('-', '_')
+        group = "${modGroup}.mc${mcSegment}"
+    } else {
+        group = modGroup
+    }
     version = modVersion
 
     // Each leaf subproject sets its own archivesName once it knows its MC.
