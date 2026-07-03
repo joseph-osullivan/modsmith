@@ -58,13 +58,16 @@ After version resolution:
 `scripts/expand-templates.sh` auto-detects multi-MC mode by inspecting
 `vars.json`: when `mc_versions` is an array with ≥ 2 entries it switches
 to the multi-MC layout; otherwise it uses the flat layout. The
-**translation** from `resolve-versions.sh` output to the multi-MC
-`vars.json` schema is handled by
-`scripts/_init_translate_resolver.py`. See its docstring for the
-field-by-field mapping rules (in particular: `mc_suffix` is derived from
-`mc_version` by replacing `.` with `_`; `java_version_shared` is the max
-of per-MC `java_version`s; `has_fabric`/`has_neoforge` flag per-MC
-loader inclusion).
+**translation** from `resolve-versions.sh` output to the `vars.json`
+schema is handled by `scripts/_init_translate_resolver.py` **in both
+modes** (multi-MC by default, single-MC via `--single-mc`). See its
+docstring for the field-by-field mapping rules (in particular:
+`mc_suffix` is derived from `mc_version` by replacing `.` with `_`;
+`java_version_shared` is the **min** of per-MC `java_version`s — every
+MC line consumes top-level `:common`'s bytecode and an older JVM cannot
+load newer bytecode; `has_fabric`/`has_neoforge` flag per-MC loader
+inclusion; `is_unobfuscated`/`fml_has_getcurrent` are true for MC ≥ 26
+and drive the obfuscation-aware template branches).
 
 **`neoform_version`:** `resolve-versions.sh` queries
 <https://maven.neoforged.net/releases/net/neoforged/neoform/maven-metadata.xml>
@@ -80,36 +83,42 @@ happy path no follow-up is needed.
 ## Resolve the plugin install root
 
 The skill needs `$MODSMITH_DIR` to invoke scripts and read templates.
-Resolve it the same way `develop` does:
+
+`CLAUDE_PLUGIN_ROOT` is **authoritative**: it is set when Claude Code
+launches the skill inside an installed plugin (for locally-linked
+installs — `claude plugin link ./modsmith` — it points at the symlink
+target). Use it whenever it is set:
 
 ```bash
-MODSMITH_DIR="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+MODSMITH_DIR="$CLAUDE_PLUGIN_ROOT"
 ```
 
-`CLAUDE_PLUGIN_ROOT` is set when Claude Code launches the skill inside an
-installed plugin. For locally-linked installs (`claude plugin link
-./modsmith`) it points at the symlink target.
+If `CLAUDE_PLUGIN_ROOT` is **unset** (e.g. you are executing this skill's
+instructions outside a plugin launch), do NOT try to derive the root from
+`$0` — snippets here run via the Bash tool, where `$0` is the shell
+binary, so any `$(dirname "$0")/..` walk-up resolves to an unrelated
+directory. Instead:
+
+1. Substitute the plugin checkout path you already know (the directory
+   containing this SKILL.md, two levels up), or
+2. Probe upward from the SKILL.md location for the marker file
+   `scripts/detect-targets.sh`, and use the directory that contains
+   `scripts/` as `$MODSMITH_DIR`.
+
+If neither works, **fail loudly** and ask the user for the plugin path —
+never guess.
 
 ## Step 1 — verify the cwd is empty
 
+POSIX-safe check (no `shopt` — the host shell may be zsh; hidden files
+like `.DS_Store` are tolerated):
+
 ```bash
-shopt -s dotglob nullglob
-entries=( "$PWD"/* )
-shopt -u dotglob nullglob
-# Allow only: empty, or contains only hidden dotfiles that aren't .git.
-non_hidden=()
-for e in "${entries[@]}"; do
-  bn=$(basename "$e")
-  case "$bn" in
-    .|..) ;;
-    .*) ;;                 # tolerate hidden files (.DS_Store, etc)
-    *) non_hidden+=("$e") ;;
-  esac
-done
+non_hidden=$(find "$PWD" -mindepth 1 -maxdepth 1 -not -name '.*' | head -5)
 ```
 
-If `non_hidden` has any entries, halt with the error above. **Do not
-prompt to overwrite.**
+If `non_hidden` is non-empty, halt with the error above. **Do not prompt
+to overwrite.**
 
 ## Step 2 — gather inputs
 
@@ -188,10 +197,11 @@ will get two MC versions resolved. Decide the scaffold mode based on
 how many **distinct** MC versions came back from the resolver:
 
 - **1 distinct MC** → single-MC mode. Even if the user passed two
-  tokens that resolved to the same MC (e.g. `latest,26.1.2` when
-  latest is `26.1.2`), there's only one row to scaffold.
-- **2+ distinct MC versions** → ask the user via `AskUserQuestion`
-  whether to scaffold:
+  tokens that resolved to the same MC (e.g. `latest,26.2` when
+  latest is `26.2`), there's only one row to scaffold.
+- **2+ distinct MC versions** → if `--multimc` or `--single-mc` was
+  passed, use that mode without prompting. Otherwise ask the user via
+  `AskUserQuestion` whether to scaffold:
   1. **Multi-MC overlay** (recommended; preserves both MC lines).
   2. **Single-MC pick** — show the list and let them choose which MC
      to keep; the rest are dropped.
@@ -215,11 +225,11 @@ About to scaffold (single-MC):
   Display name:  Shopkeeper
   Package:       com.example.shopkeeper
   Loaders:       fabric, neoforge
-  MC version:    26.1.2 (from token "latest")
+  MC version:    26.2 (from token "latest")
   Java toolchain: 25
-  Fabric loader:  0.19.2 (fabric-api 0.149.1+26.1.2)
-  NeoForge:      26.1.2.64-beta
-  Parchment:     1.21.1 / 2024.11.17  (no parchment for 26.1 yet)
+  Fabric loader:  0.19.3 (fabric-api 0.154.0+26.2)
+  NeoForge:      26.2.0.7-beta
+  Parchment:     1.21.1 / 2024.11.17  (no parchment for 26.2 yet)
   License:       MIT
   Author:        josephd
 
@@ -240,8 +250,8 @@ About to scaffold (multi-MC overlay):
   MC lines:
     - 1.21.1  Java 21  fabric 0.16.10 (api 0.111.0+1.21.1)  neoforge 21.1.230
               neoform 1.21.1-20240808.144430  parchment 1.21.1 / 2024.11.17
-    - 26.1.2  Java 25  fabric 0.19.2  (api 0.149.1+26.1.2)  neoforge 26.1.2.64-beta
-              neoform 26.1.2-1  parchment 1.21.1 / 2024.11.17 (falls back to 1.21.1; none for 26.1 yet)
+    - 26.2    Java 25  fabric 0.19.3  (api 0.154.0+26.2)  neoforge 26.2.0.7-beta
+              neoform 26.2-1  parchment 1.21.1 / 2024.11.17 (falls back to 1.21.1; none for 26.2 yet)
   License:       MIT
   Author:        josephd
 
@@ -263,36 +273,64 @@ NOTE: NeoForm version for <mc> could not be resolved. gradle.properties
       before the :versions:<mc>:common build will succeed.
 ```
 
-Use `AskUserQuestion` for the confirmation. Default Y. On `n`, exit
+**Non-interactive rule:** when EVERY input came from CLI flags
+(including the mode, via `--multimc`/`--single-mc` where 2+ MCs
+resolved), do NOT prompt — print the summary above and proceed
+directly. This is what makes the smoke-test invocations at the bottom
+of this file work end-to-end in headless/subagent contexts (where
+`AskUserQuestion` may not exist at all).
+
+Otherwise (interactive run, or some inputs were defaulted), use
+`AskUserQuestion` for the confirmation. Default Y. On `n`, exit
 cleanly (no files written).
 
 ## Step 5 — build the vars JSON + render
 
-Write the vars JSON to a temp file the renderer can read. The shape
-depends on the scaffold mode chosen in step 3.
+Write the vars JSON to a temp file the renderer can read. In BOTH modes
+the vars JSON is produced by `scripts/_init_translate_resolver.py` from
+the raw resolver output + an identity JSON — never hand-build the
+resolver→vars mapping.
 
-### Single-MC mode (existing v0.1.0 path)
+### Single-MC mode
 
-Schema is the union of:
-
-- the single chosen resolver row (`mc_version`, `java_toolchain`,
-  `fabric_loader_version`, `fabric_api_version`, `neoforge_version`,
-  `parchment_mc_version`, `parchment_version`),
-- identity fields (`modid`, `mod_name`, `mod_version`, `description`,
-  `license`, `authors`, `package_base`),
-- `loaders` (array of which loaders were selected).
-
-The renderer derives `package_base_path`, `mc_version_range`, and
-`neoforge_loader_version_range` if not supplied.
+Persist the raw resolver output and the identity JSON exactly as in the
+multi-MC snippet below, then run the translator with `--single-mc`
+(add `--mc-version <v>` if the user picked one MC out of several):
 
 ```bash
 VARS_FILE=$(mktemp /tmp/modsmith-vars.XXXXXX.json)
-# ... write the merged JSON to $VARS_FILE ...
+python3 "$MODSMITH_DIR/scripts/_init_translate_resolver.py" \
+  --resolver "$RESOLVER_FILE" \
+  --identity "$IDENTITY_FILE" \
+  --single-mc \
+  --out      "$VARS_FILE"
+
 bash "$MODSMITH_DIR/scripts/expand-templates.sh" \
   --vars "$VARS_FILE" \
   --out  "$PWD"
 rm -f "$VARS_FILE"
 ```
+
+For reference (and for debugging a bad render), the resolver→vars field
+mapping the translator applies per row is:
+
+| resolver row field | vars.json field |
+| --- | --- |
+| `mc_version` | `mc_version` |
+| `java_toolchain` | `java_version` (note the rename — templates only know `java_version`) |
+| `loaders.fabric.loader_version` | `fabric_loader_version` |
+| `loaders.fabric.fabric_api_version` | `fabric_api_version` |
+| `loaders.neoforge.loader_version` | `neoforge_version` |
+| `neoform_version` | `neoform_version` (falls back to `<mc>-1` placeholder) |
+| `parchment.mc` | `parchment_mc_version` (nullable) |
+| `parchment.version` | `parchment_version` (nullable) |
+| — (derived: parchment non-null) | `has_parchment` |
+| — (derived: MC ≥ 26) | `is_unobfuscated`, `fml_has_getcurrent` |
+
+Identity fields (`modid`, `mod_name`, `mod_version`, `description`,
+`license`, `authors`, `package_base`, `loaders`) are carried through
+verbatim. The renderer derives `package_base_path`, `mc_version_range`,
+and `neoforge_loader_version_range` if not supplied.
 
 ### Multi-MC mode
 
@@ -347,10 +385,15 @@ The renderer:
 - Skips loader-specific templates when a loader is deselected.
 - Auto-detects multi-MC mode by inspecting `vars.json` (mc_versions
   with 2+ entries).
+- Renders a `CLAUDE.md` (project conventions: test tiers, version-bump
+  rule, build commands), a `.github/workflows/ci.yml` (build matrix),
+  and a Tier-1 sample test at
+  `common/src/test/java/<pkg>/unit/ScaffoldSmokeTest.java` in both modes.
 - Verifies no `{{...}}` placeholders survived; exits 1 if any did.
-- Always drops a pinned Gradle 9.2 wrapper (jar + properties + gradlew
-  + gradlew.bat) into the scaffold from `templates/gradle-wrapper/`.
-  No `gradle` binary is required on the user's PATH.
+- Always drops a pinned Gradle 9.2.0 (GA) wrapper (jar + properties +
+  gradlew + gradlew.bat) into the scaffold from
+  `templates/gradle-wrapper/`. No `gradle` binary is required on the
+  user's PATH.
 
 If the renderer exits non-zero, **stop** and surface its stderr. Do not
 attempt to clean up partial output — the user's cwd is now in an
@@ -394,39 +437,24 @@ still works, the user just won't have a clean commit history.
 
 ## Step 7 — prove the scaffold compiles
 
-The renderer always ships a pinned Gradle 9.2 wrapper, so `./gradlew`
+The renderer always ships a pinned Gradle 9.2.0 wrapper, so `./gradlew`
 is guaranteed to be present after Step 5.
 
-### Single-MC mode
+**Both modes use the same proof command** — the full build, so every
+subproject (including `:common` and, in multi-MC mode, each
+`:versions:<mc>:common`) compiles, tests, and assembles:
 
 ```bash
-TARGETS=()
-for lo in $LOADERS_LIST; do TARGETS+=(":$lo:build"); done
-./gradlew "${TARGETS[@]}" --no-daemon
+./gradlew build --no-daemon
 ```
 
-### Multi-MC mode
+Do NOT substitute per-target builds (`:fabric:build`,
+`:versions:<mc>:fabric:build`, ...) as the proof — they skip compiling
+the common modules' own jars and under-test the scaffold. Per-target
+builds are fine for a user's later incremental iteration, not for this
+gate.
 
-Build top-level `:common` first (pure Java, no MC), then iterate over
-every per-MC × per-loader subproject. Always build the top-level
-`:common` first — every per-MC subproject depends on it.
-
-```bash
-./gradlew :common:build --no-daemon
-
-# Build every per-MC × per-loader leaf subproject.
-TARGETS=()
-for mc in "${MC_VERSIONS[@]}"; do
-  for lo in $LOADERS_LIST; do
-    TARGETS+=(":versions:${mc}:${lo}:build")
-  done
-done
-./gradlew "${TARGETS[@]}" --no-daemon
-```
-
-`MC_VERSIONS` is the array of resolved MC versions (e.g.
-`(1.21.1 26.1.2)`) you kept after the mode selection in step 3. If
-any per-MC row in the translated vars.json has
+In multi-MC mode: if any per-MC row in the translated vars.json has
 `neoform_version_is_placeholder: true`, the `:versions:<mc>:common`
 build will fail until the placeholder is replaced — surface that as
 a likely cause when the placeholder flag is set.
@@ -456,8 +484,11 @@ Scaffold complete in <cwd>.
 
 Files rendered:
   build.gradle, settings.gradle, gradle.properties
-  gradlew, gradlew.bat, gradle/wrapper/ (pinned Gradle 9.2 wrapper)
-  common/ (loader-neutral code + mixin config + AT)
+  CLAUDE.md (project conventions: test tiers, version-bump rule, build commands)
+  .github/workflows/ci.yml (CI build matrix over loaders)
+  gradlew, gradlew.bat, gradle/wrapper/ (pinned Gradle 9.2.0 wrapper)
+  common/ (loader-neutral code + mixin config + AT + JUnit wiring
+           + sample Tier-1 test)
   fabric/ (entrypoint + platform helper + manifest)
   neoforge/ (entrypoint + platform helper + manifest)
 
@@ -469,9 +500,9 @@ Next steps:
      loader-specific impls of common interfaces live in the matching
      fabric/ and neoforge/ subprojects.
   3. To verify the scaffold compiles green any time (no gradle install
-     required — the bundled wrapper downloads Gradle 9.2 on first run):
+     required — the bundled wrapper downloads Gradle 9.2.0 on first run):
         ./gradlew build
-     or, per loader:
+     or, per loader (incremental iteration only — not the full gate):
         ./gradlew :fabric:build :neoforge:build
   4. To launch a dev client (Fabric or NeoForge):
         ./gradlew :fabric:runClient
@@ -487,15 +518,18 @@ Next steps:
 Scaffold complete in <cwd> (multi-MC overlay).
 
 Layout:
-  common/                              pure Java, MC-agnostic (Java <java_version_shared>)
+  common/                              pure Java, MC-agnostic (Java <java_version_shared>,
+                                       the LOWEST across MC lines) + JUnit wiring + sample test
   versions/<mc>/common/                MC-touching shared, one copy per MC line
   versions/<mc>/fabric/                Loom per MC
   versions/<mc>/neoforge/              MDG per MC
-  gradlew, gradlew.bat, gradle/wrapper/  pinned Gradle 9.2 wrapper (bundled)
+  CLAUDE.md                            project conventions (test tiers, version-bump rule)
+  .github/workflows/ci.yml             CI build matrix over MC × loader
+  gradlew, gradlew.bat, gradle/wrapper/  pinned Gradle 9.2.0 wrapper (bundled)
 
 MC lines scaffolded:
   - 1.21.1  Java 21  neoform 1.21.1-20240808.144430
-  - 26.1.2  Java 25  neoform 26.1.2-1
+  - 26.2    Java 25  neoform 26.2-1
   (per-MC pins live in gradle.properties with the <key>_<mc_suffix>
    scheme; see references/multiloader-layout.md `## Multi-MC layout`.)
 
@@ -506,14 +540,14 @@ Next steps:
      net.fabricmc.*, or net.neoforged.* type, move the file to
      versions/<mc>/common/ — `/modsmith:doctor` enforces this.
   3. Add gameplay code via `/modsmith:develop` (preferred) or by hand.
-  4. To verify each MC line compiles green (no gradle install required —
-     the bundled wrapper downloads Gradle 9.2 on first run):
-        ./gradlew :common:build
+  4. To verify everything compiles green (no gradle install required —
+     the bundled wrapper downloads Gradle 9.2.0 on first run):
+        ./gradlew build
+     or, per MC line (incremental iteration only — not the full gate):
         ./gradlew :versions:1.21.1:fabric:build :versions:1.21.1:neoforge:build
-        ./gradlew :versions:26.1.2:fabric:build :versions:26.1.2:neoforge:build
   5. To launch a dev client for a specific MC line:
         ./gradlew :versions:1.21.1:fabric:runClient
-        ./gradlew :versions:26.1.2:neoforge:runClient
+        ./gradlew :versions:26.2:neoforge:runClient
   6. To fork a shared class between MC versions, copy
      versions/<old>/common/.../Foo.java to
      versions/<new>/common/.../Foo.java keeping the same FQN, and

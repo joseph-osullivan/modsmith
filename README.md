@@ -96,7 +96,7 @@ modsmith/
 - **Versions:** Single source of truth in root `gradle.properties`. Subproject `build.gradle` files read via `findProperty`. Hardcoded versions in subprojects are a `doctor` hard-fail.
 - **Tests:** Three tiers — Tier-1 JUnit (alongside code, in `common/`), Tier-2 GameTest (per loader, runs in background during dev-server handoff), Tier-3 scenarios (optional, multi-tick scripts).
 - **Loaders:** Fabric and NeoForge (modern). Forge legacy is explicitly out of scope.
-- **Gradle wrapper:** scaffolds ship with a pinned Gradle 9.2 wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/`). No system `gradle` install required — `./gradlew build` works directly after `/modsmith:init`.
+- **Gradle wrapper:** scaffolds ship with a pinned Gradle 9.2.0 (GA) wrapper (`gradlew`, `gradlew.bat`, `gradle/wrapper/`). No system `gradle` install required — `./gradlew build` works directly after `/modsmith:init`.
 
 ## Inspired by
 
