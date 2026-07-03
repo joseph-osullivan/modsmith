@@ -231,6 +231,28 @@ Fabric + NeoForge.
 
 ## Minecraft 26.1 (NeoForge 26.1.x)
 
+- **Patch-level NeoForge bumps can change patched-API signatures within
+  one MC line.** Field case: `EventHooks.onResourceReload` went from
+  `(ReloadableServerResources, RegistryAccess)` in 26.1.2.43-beta to a
+  3-arg form (`+ Map<ListenerKey<?>, PreparableReloadListener>`) in
+  26.1.2.76. The call sits in NeoForge's `ReloadableServerResources`
+  patch and runs during `GameTestServer.create` — a caller compiled
+  against the old shape dies at datapack reload with `NoSuchMethodError`
+  before any test runs. Re-verify documented API-shape assumptions on
+  EVERY NeoForge bump, not just MC-line jumps. Cited from the .76
+  `ReloadableServerResources.java.patch` + javap, field-verified 2026-07.
+  *(runtime-semantic)*
+
+- **(build-infra) Cross-version NFRT cache restores in CI produce stale
+  patched-MC jars after a NeoForge bump.** `gradle/actions/setup-gradle`
+  restores `~/.gradle/caches/neoformruntime` with no NeoForge-version-
+  scoped key, so CI can link against the OLD recompiled Minecraft while
+  fresh local builds look green. Detection signature: `NoSuchMethodError`
+  on a patched-MC/`EventHooks` symbol only on CI, surviving a flake
+  retry, immediately after a `neoforge_version` bump. Fix:
+  `neoFormRuntime { enableCache = false }` (safe, slower) or a
+  version-scoped CI cache key. Field-verified 2026-07.
+
 - **`CompoundTag.getCompound(String)` returns `Optional<CompoundTag>` in
   26.1.** Use `getCompoundOrEmpty` for the old always-a-tag behavior.
   Probe-verified 2026-07.
