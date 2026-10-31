@@ -301,6 +301,11 @@ gate catches:
   output.** Anything else is labeled UNVERIFIED in the PR body.
   (Unexecuted manual test scripts map 1:1 to post-approval bugs in the
   field record.)
+- **Vanilla feature currency.** The target is the latest stable Minecraft
+  and knowledge cutoffs go stale: before claiming "X isn't in vanilla yet"
+  or designing a workaround, web-search to confirm (field miss: a
+  trident-as-spear design shipped after vanilla had added spears). No
+  gate catches this class — it is research-time discipline.
 - **Artifact citations, not confidence percentages.** Claims about
   vanilla assets, API behavior, or the host codebase cite a jar listing,
   decompiled file:line, or repo grep — or are labeled speculation.
