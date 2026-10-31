@@ -64,7 +64,7 @@ left in the generic layer.
 
 Done when: lord-of-lands CLAUDE.md is under ~200 lines, `./gradlew integrationCheck` still green, modsmith `validate.yml` green, and a fresh session in LotL invokes `/modsmith:develop` by routing alone.
 
-### Phase 1: design layer (2 to 3 sessions) — IN PROGRESS 2026-10-31: references, skill, and wiring shipped; Rust and Rune bible interview is the open item
+### Phase 1: design layer (2 to 3 sessions) — DONE 2026-10-31 (modsmith #11; Rust and Rune bible signed, rust-and-rune #2)
 
 Goal: the agent can tell good from bad gameplay decisions and prove it.
 
@@ -76,7 +76,7 @@ Goal: the agent can tell good from bad gameplay decisions and prove it.
 
 Done when: Rust and Rune has a signed design bible and a backlog of design briefs, and a deliberately bad feature proposal ("add a village stats HUD") is rejected by the gate with the right citations.
 
-### Phase 2: the eye (2 to 4 sessions)
+### Phase 2: the eye (2 to 4 sessions) — IN PROGRESS 2026-10-31
 
 Goal: the agent can see what it built. Everything visual depends on this,
 and nothing off the shelf does it for NeoForge 26.1.
