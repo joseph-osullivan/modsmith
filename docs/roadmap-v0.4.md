@@ -48,7 +48,7 @@ Order is deliberate: design judgement and the eye come before more
 generation capacity, because the complaint driving this is "technically
 right, not fun, not discoverable, not pretty", not "too slow".
 
-### Phase 0: re-baseline (1 to 2 sessions)
+### Phase 0: re-baseline (1 to 2 sessions) — DONE 2026-10-31 (modsmith #10, lord-of-lands #215, tweaks-and-fixes #8)
 
 Goal: one source of truth, current Claude Code idioms, nothing LotL-specific
 left in the generic layer.
@@ -64,7 +64,7 @@ left in the generic layer.
 
 Done when: lord-of-lands CLAUDE.md is under ~200 lines, `./gradlew integrationCheck` still green, modsmith `validate.yml` green, and a fresh session in LotL invokes `/modsmith:develop` by routing alone.
 
-### Phase 1: design layer (2 to 3 sessions)
+### Phase 1: design layer (2 to 3 sessions) — IN PROGRESS 2026-10-31: references, skill, and wiring shipped; Rust and Rune bible interview is the open item
 
 Goal: the agent can tell good from bad gameplay decisions and prove it.
 

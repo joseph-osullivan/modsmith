@@ -88,6 +88,19 @@ this verification — the posture works; keep it.
    SavedData cleanup, no pursuit assertions). A test that would pass
    against the buggy parent commit is a finding.
 
+8. **Design gate (player-facing changes).** The PR body has a Design
+   section (or cites a `docs/design/briefs/<slug>.md`) answering
+   `references/design-gate.md`, and each answer is TRUE OF THE DIFF: the
+   discoverability staging exists in code or data, the named feedback
+   channels are wired to live call sites, nothing player-visible was
+   added that the section omits (a chat line, command, overlay, GUI
+   tab). Use the failure-mode names from `references/game-design.md`
+   verbatim (menu play, invisible mechanic, book-first teaching,
+   chat-only feedback, vanilla-redundant, plays itself, scope creep).
+   A player-facing PR with no Design section and no bible in the repo is
+   a SHOULD FIX naming `/modsmith:design bible`; with a bible present it
+   is a MUST FIX.
+
 ## What NOT to burn findings on
 
 - Version bumps, changelog wording, comment style — the orchestrator
