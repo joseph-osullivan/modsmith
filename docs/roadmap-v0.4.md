@@ -78,6 +78,15 @@ Done when: Rust and Rune has a signed design bible and a backlog of design brief
 
 ### Phase 2: the eye (2 to 4 sessions) — IN PROGRESS 2026-10-31
 
+**State at pause (2026-10-31 evening):**
+- Decision: adopt MCPFabric (MIT; NeoForge jars for 26.1.2, 26.2, 26.3; 69 tools incl. `screenshot`, `look` yaw/pitch, `teleport_player`, `run_command`, `set_block`, `summon_entity`, `join_world`). Build our own scene-driver only if it fails on a NeoForge dev client. Bridge: `POST http://127.0.0.1:25599/rpc` with `{method, params}` and `Authorization: Bearer <token>`; token in the run dir's `config/mcpfabric.config.json`. MCP server built from source in the session scratchpad (`mcpfabric/mcp-server/dist/index.js`, env `MCPFABRIC_TOKEN`).
+- structura-render 0.8.3 works on 26.1.2 assets (`STRUCTURA_MINECRAFT_ASSETS=<client jar>`; six-view sheet of a 7x7 watchtower in ~5 s). Install with the native arm64 `python3 -m venv` + pip; the x86_64 Homebrew `uv` pulls Intel wheels into an arm64 venv and numpy/PIL fail to load.
+- `scripts/palette-extract.py` done and tested (26 families from the 26.1.2 jar).
+- Test bed decided with Joseph: Rust and Rune, fresh NeoForge-only scaffold on branch `scaffold/neoforge-latest` (created, empty so far). Lords of the Lands is off limits for anything Rust and Rune; the brief MCPFabric trial there was fully removed.
+- Version facts for the scaffold (verified 2026-10-31): Mojang latest release **26.3** (2026-09-15); NeoForge **26.3.0.100** is a stable (non-beta) build; NeoForm **26.3-1** exists. `scripts/resolve-versions.sh` returned `loader_version: null` for NeoForge 26.3 and flagged NeoForm `26.3-1` as a placeholder — both wrong; **fix the resolver** (probably a beta-only filter or metadata-parse miss) before running init, or pass the pins explicitly.
+- Next: fix resolver → render scaffold into an empty scratch dir → transplant onto the branch (keep `docs/`, `.git`) → `./gradlew build` → drop the MCPFabric 26.3 jar into `run/mods` → `runClient` → bridge screenshots of a placed template from four angles → plant a defect → write `references/eye-playbook.md` and the visual evidence rule.
+- Side note for Joseph: Lords of the Lands is on 26.1.2 while latest stable is 26.3; the "always latest" policy says that is drift to schedule.
+
 Goal: the agent can see what it built. Everything visual depends on this,
 and nothing off the shelf does it for NeoForge 26.1.
 
