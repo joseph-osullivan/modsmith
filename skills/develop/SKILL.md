@@ -214,7 +214,11 @@ When you decide to stop mid-run for context reasons, write a clean handoff to `{
 
 You do the work yourself. Spawn a subagent only when a bounded piece is
 genuinely delegable (e.g. `modsmith-gametest-author` for a batch of tests
-on a surface you've already fixed) — never as ceremony.
+on a surface you've already fixed, or `modsmith-pr-reviewer` for the
+pre-PR adversarial review of any non-trivial change) — never as
+ceremony. Minecraft review ALWAYS goes to `modsmith-pr-reviewer` in
+Lane 1 (`modsmith-reviewer` is the Lane 2 end-of-run auditor); never to
+a generic web-app reviewer.
 
 1. **Branch** from the default branch: `fix/<slug>` or `feat/<slug>`. One
    coherent change per branch.
@@ -251,14 +255,24 @@ on a surface you've already fixed) — never as ceremony.
    eyeball, known gaps, and a mandatory **"Deviations / Surprises"**
    section — the plan-vs-reality confession is the highest-signal
    artifact in the field record. **The PR is the checkpoint. Never merge
-   it yourself; never push the default branch.** If the repo has no
+   it yourself unless the user has explicitly delegated merging; never
+   push the default branch.** When merging IS delegated: verify the
+   checks are green and merge as two separate, separately-read steps —
+   NEVER chain `gh pr checks <n> && gh pr merge <n>`; a chained invocation
+   once merged a PR over a red check. If the repo has no
    GitHub remote (or `gh` is unavailable), write the full PR body — same
    mandatory sections — to `PR_BODY.md` at the repo root, commit it on
    the branch, tell the user, and stop: the branch plus the body file
    are the checkpoint.
 7. **Iterating on an open PR**: fix on the same branch; after any push
    that adds commits, refresh the PR title/body to describe the whole
-   branch as it now stands.
+   branch as it now stands — no "update:" appendices. **Ratified
+   fix-round gate:** a review (yours or an agent's) with ANY findings
+   triggers a fix round — should-fix included, not just must-fix.
+   SHOULD-FIX items may be disposed as won't-fix with a one-line
+   rationale in the PR body; MUST-FIX are mandatory. With no must-fix
+   items, do not gold-plate: apply cheap high-confidence fixes, dispose
+   the rest.
 
 No run dir, no `state.json`, no handoff files. If the session dies, the
 branch + PR (or the diff on disk) carry the state.
@@ -287,6 +301,11 @@ gate catches:
   output.** Anything else is labeled UNVERIFIED in the PR body.
   (Unexecuted manual test scripts map 1:1 to post-approval bugs in the
   field record.)
+- **Vanilla feature currency.** The target is the latest stable Minecraft
+  and knowledge cutoffs go stale: before claiming "X isn't in vanilla yet"
+  or designing a workaround, web-search to confirm (field miss: a
+  trident-as-spear design shipped after vanilla had added spears). No
+  gate catches this class — it is research-time discipline.
 - **Artifact citations, not confidence percentages.** Claims about
   vanilla assets, API behavior, or the host codebase cite a jar listing,
   decompiled file:line, or repo grep — or are labeled speculation.
@@ -300,6 +319,60 @@ gate catches:
   one-line rejection.
 - A review verdict (yours or an agent's) **records the reviewed SHA**;
   if HEAD moves before merge, append a delta note or re-review the diff.
+
+## Multi-session coordination (both lanes)
+
+When more than one session works the same mod ecosystem concurrently:
+
+- **Partition by repo**, never by feature within a repo — this is what
+  prevents gradle/JVM/test-run collisions and version-bump races.
+- One authoritative **append-only ledger** file both sessions read first
+  and write to (own section only), newest entry on top. Status block
+  separate from the log. Verify the other session's claims by pull +
+  content check, not PR state.
+- **Never run GameTests while the other session might be** — the
+  preflight JVM reaper kills by pattern (age-gated, but `--force` is
+  not) and parallel test JVMs starve async chunk promotion and flake
+  both suites. Check for a running `runGameTestServer` before invoking
+  preflight's full mode.
+- **Busy-check trap: guard wait-loops with `pgrep -x java`, NEVER
+  `pgrep -f runGameTestServer`.** A shell wait-loop whose script text
+  contains the literal string "runGameTestServer" matches ITS OWN (and
+  every sibling loop's) argv under `pgrep -f`, so two concurrent waiters
+  deadlock forever on a false "busy" while the machine sits idle.
+  `pgrep -x java` matches only real JVM processes; the gradle launcher is
+  java, so gates, exporters, and a running client all correctly read
+  busy. Poll ~30–60s; accept false-busy from unrelated JVMs as the safe
+  direction.
+- **Never touch the other session's working copy.** Anything you need
+  from that repo (a release build, a file read at a SHA), do in a fresh
+  isolated worktree: `git worktree add <scratch> <sha>` → build → verify
+  → `git worktree remove`. Release jars are ALWAYS built this way when
+  the checkout is contested, and verified before publishing (entry count
+  sane, zero test machinery in the jar).
+
+## Dead-agent / dead-session salvage (both lanes)
+
+Sessions and subagents die mid-task — spend limits, crashes, restarts.
+Both campaign deaths on record lost ONLY uncommitted work; this protocol
+makes death cheap:
+
+- **Brief rule — mandatory in every builder/fixer prompt: checkpoint-commit
+  green production code BEFORE test-authoring begins.** The moment static
+  gates pass on the production change, commit it; tests land as later
+  commits on the same branch.
+- **On any agent/session death:** run `git status` in the repo root AND in
+  every worktree before doing anything else. Found uncommitted work →
+  verify it compiles/passes what it claims → commit the salvage to a
+  branch immediately, THEN decide what to do with it. Never let verified
+  work sit uncommitted while you investigate.
+- **Branch repair after a mid-stack death:** `git rebase --onto
+  origin/main <old-base> <branch>`, then verify the resulting tree is
+  byte-identical to the tested one (`git diff <tested-sha>` empty) before
+  pushing; anything non-identical re-gates from scratch.
+- Session restarts KILL in-flight Workflow-tool runs and their subagents
+  — orphaned worktrees and JVMs are part of the salvage sweep
+  (`git worktree list`, `scripts/preflight.sh`).
 
 ## Stacked PRs under squash-merge (both lanes)
 

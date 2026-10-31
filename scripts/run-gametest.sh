@@ -7,6 +7,10 @@
 #   run-gametest.sh [--log <path>] [--task <task>] [--subproject <:name>]
 #                   [--warmup] [-- <gradle-args>...]
 #
+# --console=plain is passed to gradle by default (rich console output breaks
+# log parsing and burned a whole campaign of manual `-- --console=plain`
+# workarounds); pass your own --console=... after -- to override.
+#
 # --warmup runs the gradle task once with results discarded (logs only) and
 # exits 0 immediately. Used to warm up the JVM + gradle daemon before the
 # "real" run; see references/gametest-rules.md (Rule 7).
@@ -29,9 +33,12 @@ GRADLE_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --log) LOG_PATH="$2"; shift 2 ;;
-    --task) TASK="$2"; shift 2 ;;
-    --subproject) SUBPROJECT="$2"; shift 2 ;;
+    --log) [ $# -ge 2 ] || { warn "--log needs a value"; exit 2; }
+           LOG_PATH="$2"; shift 2 ;;
+    --task) [ $# -ge 2 ] || { warn "--task needs a value"; exit 2; }
+            TASK="$2"; shift 2 ;;
+    --subproject) [ $# -ge 2 ] || { warn "--subproject needs a value"; exit 2; }
+                  SUBPROJECT="$2"; shift 2 ;;
     --warmup) WARMUP=1; shift ;;
     --) shift; GRADLE_ARGS=("$@"); break ;;
     *) warn "unknown arg: $1"; exit 2 ;;
@@ -50,6 +57,18 @@ if [ -n "$SUBPROJECT" ] && [[ "$TASK" != :* ]]; then
   FULL_TASK="${SUBPROJECT}:${TASK}"
 else
   FULL_TASK="$TASK"
+fi
+
+# Default to a plain console unless the caller passed their own --console.
+# NOTE the ${arr[@]+...} expansion below: under macOS bash 3.2 + `set -u`,
+# expanding an EMPTY array with "${arr[@]}" aborts the script with
+# "unbound variable" — this guard is load-bearing, don't simplify it away.
+HAS_CONSOLE=0
+for a in ${GRADLE_ARGS[@]+"${GRADLE_ARGS[@]}"}; do
+  case "$a" in --console=*|--console) HAS_CONSOLE=1 ;; esac
+done
+if [ $HAS_CONSOLE -eq 0 ]; then
+  GRADLE_ARGS=(${GRADLE_ARGS[@]+"${GRADLE_ARGS[@]}"} --console=plain)
 fi
 
 if ! is_mc_mod_repo; then
@@ -80,7 +99,7 @@ find run/gametestserver -mindepth 1 -depth -delete 2>/dev/null || true
 if [ $WARMUP -eq 1 ]; then
   START=$(date +%s)
   set +e
-  ./gradlew "$FULL_TASK" "${GRADLE_ARGS[@]}" 2>&1 | tee "$LOG_PATH" >&2
+  ./gradlew "$FULL_TASK" ${GRADLE_ARGS[@]+"${GRADLE_ARGS[@]}"} 2>&1 | tee "$LOG_PATH" >&2
   WARMUP_EXIT=${PIPESTATUS[0]}
   set -e
   DURATION=$(( $(date +%s) - START ))
@@ -97,14 +116,21 @@ fi
 # semantics issues by using PIPESTATUS.
 START=$(date +%s)
 set +e
-./gradlew "$FULL_TASK" "${GRADLE_ARGS[@]}" 2>&1 | tee "$LOG_PATH" >&2
+./gradlew "$FULL_TASK" ${GRADLE_ARGS[@]+"${GRADLE_ARGS[@]}"} 2>&1 | tee "$LOG_PATH" >&2
 GRADLE_EXIT=${PIPESTATUS[0]}
 set -e
 DURATION=$(( $(date +%s) - START ))
 
-# Parse outcome from the log so the caller doesn't have to.
-PASSED=$(grep -cE 'GameTest.*passed' "$LOG_PATH" 2>/dev/null | head -1 || echo 0)
-FAILED=$(grep -cE 'GameTest.*failed|FAILED' "$LOG_PATH" 2>/dev/null | head -1 || echo 0)
+# Parse outcome from the log so the caller doesn't have to. NOTE: grep -c
+# prints "0" AND exits 1 on zero matches — under pipefail an `... || echo 0`
+# tail appends a SECOND line and breaks the one-JSON-line contract. `|| true`
+# + ${VAR:-0} (for the file-missing case) is the correct shape.
+# FAILED counts GameTest failures only (a gradle "BUILD FAILED" line is not a
+# test); overall failure rides status/gradle_exit.
+PASSED=$(grep -cE 'GameTest.*passed' "$LOG_PATH" 2>/dev/null || true)
+PASSED=${PASSED:-0}
+FAILED=$(grep -cE 'GameTest.*failed' "$LOG_PATH" 2>/dev/null || true)
+FAILED=${FAILED:-0}
 CRASHED=0
 grep -qE 'Exception in server tick loop|JVM crash|fatal error' "$LOG_PATH" 2>/dev/null && CRASHED=1
 

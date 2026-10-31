@@ -256,37 +256,26 @@ their branches are merged.
   for state changes, DEBUG for high-frequency, WARN/ERROR for genuine
   bugs (not user-input rejections — those are flow control).
 
-### NeoForge 26.1 (current as of 2026-05) landmines
+### Where the landmines live (do NOT trust memory for these)
 
-These bite at runtime even though the build passes. Worth checking
-against if you're on this MC version:
+Version-specific API landmines are deliberately NOT listed in this
+file — an inline snapshot rots silently and gets trusted after it
+stops being true. The canonical sources, in lookup order:
 
-- `Zombie` lives at `net.minecraft.world.entity.monster.zombie.Zombie`
-  (was `monster.Zombie` pre-26.1). Same pattern for other monster
-  subpackages.
-- `BlockEntity.saveAdditional` / `loadAdditional` take `ValueOutput` /
-  `ValueInput` (NeoForge patched the parent). Old `(CompoundTag,
-  HolderLookup.Provider)` signatures are gone.
-- `GameTestHelper.getBlockEntity` requires a `Class<T>` arg.
-- Test function registry IDs MUST be `[a-z0-9/._-]` only — camelCase
-  fails mod load with `IdentifierException`.
-- `helper.spawn` does NOT call `finalizeSpawn`; goes straight to
-  `addFreshEntity`. Test the equip-on-load path instead.
-- `@EventBusSubscriber(modid = MOD_ID)` — no `bus =` attribute (gone
-  in 26.1; events auto-route per their type).
-- `Block.Properties` requires registry id BEFORE construction — use
-  `BLOCKS.registerBlock(name, Ctor::new, ...)`, not raw `register`.
-- `ShowTradesToPlayer` brain behavior clears `EquipmentSlot.MAINHAND`
-  when a player stands near any Villager. If your subclass has no
-  trades, override `setItemSlot` to reject `MAINHAND + EMPTY`.
-- `PoiManager.release(pos)` throws `IllegalStateException` if the POI
-  doesn't exist. Always wrap in try/catch.
+1. The host project's **`CLAUDE.md` "Active landmines"** section —
+   per-project, curated, current for the project's MC version.
+2. The plugin's **`references/landmines.md`** — the cross-run index,
+   one section per MC version plus multi-loader toolchain entries. Read
+   its applicability header first: entries apply only to matching MC
+   versions, and even then are leads to verify
+   (`scripts/symbol-check.sh`), not gospel.
+3. The real classpath, via `scripts/symbol-check.sh <project> <
+   probe.java` — javac against the compile classpath is the only
+   oracle; decompiled/neoform cache jars are pre-mapping and lie.
 
-### Older Forge / Fabric
-
-If the project targets MC 1.20.x / 1.21.x with Forge or Fabric, the
-above 26.1 landmines don't all apply. Read CLAUDE.md's landmine
-section first to know what's current for your project.
+When you resolve a NEW rename or signature change, **append it to
+`references/landmines.md` in the same session** so the next run gets it
+free.
 
 ## Validation cadence
 
@@ -329,6 +318,31 @@ tier:
 - Multi-tick, multi-actor, or cross-feature → Tier 3 (if project
   supports it; otherwise upgrade to a longer Tier 2 with simulated
   ticks)
+
+## Checkpoint-commit before tests
+
+**Commit green production code BEFORE you start authoring tests.** Both
+mid-campaign session deaths in the field record lost only uncommitted
+work — production code that had already passed static gates but sat in
+the working tree while tests were being written. The moment
+`compileJava` + the project's static gate pass on your production
+change, commit it; test commits follow on the same branch.
+
+## PR-body claim discipline
+
+The reviewer verifies claims mechanically — write the body so it
+survives that:
+
+- **Never claim an artifact exists without checking it is in the
+  diff** (`git diff --stat`). Phantom landmine entries and "added a
+  lang key" claims with no matching hunk are the recurring burn.
+- **Never claim test stability beyond runs you executed.** Check the
+  CI flake ledger (if the project keeps one) before claiming "no
+  flakes"; cite run counts ("green 3/3 local" not "stable").
+- **State balance changes numerically, old vs new** ("raid cadence
+  26 → 9 days"), never "roughly tracks" or "slightly faster".
+- **Count keys/ids/tests from the diff, not memory** — diff the lang
+  file, count the registry ids.
 
 ## Commit hygiene
 
