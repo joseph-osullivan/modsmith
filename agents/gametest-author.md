@@ -225,10 +225,10 @@ These rules prevent the recurring flake patterns that have bitten this skill bef
 
 ### Timing / async
 
-4. **`runAfterDelay(2L+, ...)` for any assertion that reads world state mutated synchronously in the test body** — `setBlock` → `getBlockEntity`, `addFreshEntity` → `getEntitiesOfClass`, POI registration after block placement. The chunk's BE / entity index doesn't always flush within tick 0 on slow CI runners.
+4. **Defer with `helper.runAtTickTime(5, ...)` any assertion that reads world state mutated synchronously in the test body** — `setBlock` → `getBlockEntity`, `addFreshEntity` → `getEntitiesOfClass`, POI registration after block placement. The chunk's BE / entity index doesn't always flush within tick 0 on slow CI runners. `runAtTickTime` (absolute tick) is the ratified form over `runAfterDelay(2L)`-style relative delays — the target doesn't drift as setup work grows. Pair it with a **visibility precondition**: when the assert consumes an index-backed query (entity / BE / POI lookup), first check the query returns the subject at all, and fail that precondition with an explicit "not index-visible at tick N" message — an index-lag failure must read as index lag, not as the mechanic being broken.
 5. **Use `succeedWhen(Predicate)` over fixed-tick assertions** when the condition's resolution time is uncertain — it retries until timeout, succeeding on the first tick the predicate holds.
 6. **Set `setup_ticks: 2-5` in the test_instance JSON** for any test that needs world stabilization (POI registration, gravity settle, BE lazy-init). Default `1` is often too tight.
-7. **`max_ticks` must comfortably exceed any `runAfterDelay` total** — bump to 10 for tests that defer their assertions.
+7. **`max_ticks` must comfortably exceed any deferred assert's tick target** — bump to 10+ for tests that defer to tick 5.
 8. **Never use `@GameTest(attempts=N, requiredSuccesses=M)` retries** — that's a smell, not a fix. Eliminate the flake's root cause instead. The only legitimate use is genuine random elements (mob pathfinding); flag and ask before using.
 
 ### Arena isolation (cells share one world)
@@ -283,6 +283,21 @@ These rules prevent the recurring flake patterns that have bitten this skill bef
 
 ### Don't
 
+- **Don't assert pursuit — assert target ACQUISITION.** Pin `getTarget()` /
+  attack-memory being SET, never `createPath` results, distance-closing
+  over ticks, or arrival. Pathfinding outcome depends on the grid tiling
+  around the cell and re-rolls whenever the suite reshuffles. Corollary:
+  for any grid-tiling / CI-only flake, **local green is never evidence a
+  fix works** (one field case burned three wrong diagnoses that all
+  passed locally) — validate on the environment that reproduces it, or
+  remove the un-assertable claim rather than model it.
+- **Don't run an unbounded world search in-suite.** A real
+  `findNearestMapStructure` / biome scan with no hint on the void
+  GameTest world grinds hundreds of thousands of cold chunk checks and
+  hangs the whole server (field incident: server thread parked 11+ min in
+  `StructureCheck.tryLoadFromStorage`). Drive the resolver with fakes or
+  an explicit hint; leave the real scan to a manual `/locate` check noted
+  in the PR body.
 - **Don't trust brain memories for lifecycle.** `MemoryModuleType.JOB_SITE` and similar get cleared by vanilla behaviors. Store anything you need on the entity in NBT.
 - **Don't write tests that pass via timing luck** (e.g., reading entity state at tick 0 when it stabilizes at tick 1). Defer the read explicitly.
 - **Don't share state across tests in the same class** — each test gets a fresh structure template; design assertions to live within one test's lifecycle.
@@ -306,7 +321,7 @@ Locate sibling JSONs first (glob `src/**/test_instance/*.json`), copy their stru
 - `function`: `"<modid>:<test_function_id>"` matching the registered DeferredHolder
 - `structure`: `"minecraft:empty"` for most cases (no template needed)
 - `setup_ticks`: 2-5 (rarely 1)
-- `max_ticks`: 5-15 depending on `runAfterDelay` totals
+- `max_ticks`: 10-15 for anything with a deferred assert (the rule-4 default); 5 only when nothing is deferred
 - `required`: `true` (always — non-required tests don't fail the build)
 - `environment`: `"minecraft:default"`
 

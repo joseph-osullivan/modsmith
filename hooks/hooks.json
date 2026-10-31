@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-session-start.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-session-start.sh"
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-pre-bash.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-pre-bash.sh"
           }
         ]
       }
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hook-subagent-stop.sh"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/hook-subagent-stop.sh"
           }
         ]
       }
