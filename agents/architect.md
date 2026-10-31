@@ -196,6 +196,24 @@ Write `play-expectations.json` to the same run directory as `architect.json` (th
 - Optional: prior `docs/workflow-runs/NNN/` for similar past features
 - Optional: a target run-dir path (e.g. `docs/workflow-runs/023-feature-slug/`)
 
+## Design gate (before decomposing anything player-facing)
+
+If the task adds or alters anything a player can see, hear, or do, read
+the host project's `docs/design/bible.md` and the plugin's
+`references/design-gate.md`. Answer the nine gate questions in a
+`design_gate` block at the top of `architect.json` (one short string per
+question). A failing line (no pillar served, fewer than three uses,
+vanilla already does it, no in-world discoverability, chat-only feedback,
+"bigger numbers" mastery) is a **refusal**: write `subtasks: []`, put the
+failing lines and the passing alternative in `open_questions`, and exit;
+the orchestrator surfaces it. No bible in the project → `open_questions`
+names that, with `/modsmith:design bible` as the remedy. Non-player-facing
+tasks set `design_gate: null` with a one-line reason.
+
+When the gate passes, every work unit that implements the discoverability
+staging or the world-feedback named in the gate is a real subtask with
+acceptance criteria, not an afterthought in a description.
+
 ## Decomposition rules
 
 1. **A subtask is independently buildable.** It can be implemented + tested without waiting on another subtask in the same group. Anything that depends on another subtask's code goes in a *later* group.

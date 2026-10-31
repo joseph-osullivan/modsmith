@@ -67,6 +67,12 @@ them, don't re-derive them:
      reserves: releases, user-visible behavior, spend);
    - decisions the user wants surfaced rather than made, and any
      defaults to use meanwhile.
+1b. **Find the design bible.** For each in-scope mod repo, look for
+   `docs/design/bible.md`. Present → read it; Mandate B (improve the
+   product) is judged against it and every greenlit player-facing item
+   gets a brief via `/modsmith:design brief`. Absent → the first item on
+   Menu 1 is `/modsmith:design bible`, and Mandate B is deferred until it
+   exists. Never derive the hook from the code.
 2. **Create the engagement folder** OUTSIDE the repos (a sibling
    directory). All deliverables live there; the repos receive only
    branches and PRs.

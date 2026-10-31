@@ -6,7 +6,7 @@ Scaffolds multi-loader (Fabric + NeoForge) mods, orchestrates the full dev cycle
 
 ## Status
 
-**v0.4.0-alpha.1 — Phase 0 of the v0.4 roadmap (`docs/roadmap-v0.4.md`).** Adds multi-session coordination and dead-session salvage rules, the Lane 1 adversarial `pr-reviewer` agent, builder PR-claim discipline, ~35 more NeoForge 26.1 landmines, GameTest timing refinements, a `gradle-reset` skill, and an opt-in `guards` skill (Stop hook, `/goal`, `/verify`). Research behind the roadmap is in `docs/research/`.
+**v0.4.0-alpha.2 — Phases 0–1 of the v0.4 roadmap (`docs/roadmap-v0.4.md`).** Phase 1 adds the design layer: `/modsmith:design`, `references/game-design.md`, `references/design-gate.md`, and the gate wired into develop Lane 1, the architect, the PR reviewer, and engage. Phase 0 added multi-session coordination and dead-session salvage rules, the Lane 1 adversarial `pr-reviewer` agent, builder PR-claim discipline, ~35 more NeoForge 26.1 landmines, GameTest timing refinements, a `gradle-reset` skill, and an opt-in `guards` skill (Stop hook, `/goal`, `/verify`). Research behind the roadmap is in `docs/research/`.
 
 **v0.3.0 — pre-release.** All skills, agents, references, templates, and scripts are authored. v0.3.0 adds the `engage` skill (multi-day engagement scaffolding: brief, ledger, decision menus, considerations), self-hosted marketplace packaging, and closes the residual canary findings from the v0.2.1 gate (macOS-safe temp-file handling in init, guarded LICENSE jar-stamping, corrected NeoForge loader-range default). v0.2.0 rebuilt `/modsmith:develop` as a **two-lane workflow**: Lane 1 (default) is a lightweight branch → failing test → fix → gate → PR loop with no ceremony; Lane 2 (opt-in) keeps the full orchestration (architect decomposition, parallel worktree builders, checkpointed resume, dev-server handoff) for genuinely multi-subsystem features. It also ships a compile-probe API oracle (`scripts/symbol-check.sh`), a verify-protocol + staleness banner for the landmine index, and arena-isolation GameTest rules distilled from field flake hunts. Distribution via the official Claude Code marketplace will follow real-world migration validation.
 
@@ -62,6 +62,7 @@ claude plugin link ./modsmith
 | **`/modsmith:develop <task>`** | Two-lane dev workflow. **Lane 1 (default):** branch → failing test → fix → gate → PR — no run dir, no checkpoint file; evidence rules distilled from two dozen archived field runs. **Lane 2 (opt-in, 3+ disjoint subtasks):** 0 bootstrap → 1 architect → 2 research → 3 plan → 4 build (parallel worktrees) → 5 doctor → 6 handoff (dev server + background gametest/log-watcher/reviewer) → 7 kick-back loop → 8 PR. Detects single-loader vs multi-loader vs monolith repos. |
 | **`/modsmith:doctor`** | Audit the current mod for multi-loader hygiene. Hard-fails on `common/` → loader imports, missing platform impls, missing `META-INF/services/` registrations, `mods.toml` (old name) presence, refmap/AT misconfigs, modid mismatches across loaders. Warns on stale pinned versions, missing `pack.mcmeta`, AT/AW parity drift. Runs as a phase gate inside `:develop`. |
 | **`/modsmith:engage`** | Set up or resume a multi-day autonomous engagement: a BRIEF with mandates + an autonomy contract (the PR is the checkpoint, not the merge), Gear-1 triage → decision menu, Gear-2 batched implementation via `:develop`, an append-only progress ledger with multi-session rules, and wind-down deliverables. Ships four fill-in templates. |
+| **`/modsmith:design`** | Gameplay design layer. `bible` interviews the developer into a design bible (hook, pillars, loops, archetypes, discoverability and feedback vocabulary); `brief` fills the nine-question design gate for one feature; `orient` gives a pass/fail verdict on a proposal; `audit` runs every shipped feature through the gate for keep/fix/cut. Output lives in the host project's `docs/design/`. |
 | **`/modsmith:gradle-reset`** | Stops the Gradle daemon, deletes `.gradle/` and `build/`, recompiles. The nuclear option for a wedged build cache. |
 | **`/modsmith:guards`** | Opt-in self-correction: a Stop hook on the project's fast gate, `/goal` guidance for unattended runs, `/verify` for visual surfaces. Installs only what the user picks, into the project's settings. |
 
@@ -74,6 +75,7 @@ modsmith/
 │   ├── develop/                   ← two-lane workflow (Lane 2 = 8 phases)
 │   ├── init/                      ← greenfield scaffolding
 │   ├── doctor/                    ← multi-loader audit
+│   ├── design/                    ← bible / brief / orient / audit
 │   ├── engage/                    ← multi-day autonomous engagement
 │   ├── gradle-reset/              ← wedged-build reset
 │   └── guards/                    ← opt-in Stop hook / goal / verify
@@ -91,6 +93,8 @@ modsmith/
 │   ├── multiloader-layout.md      ← canonical project tree
 │   ├── expect-actual-pattern.md   ← ServiceLoader pattern (copy-pasteable)
 │   ├── landmines.md               ← MC API renames + multi-loader gotchas
+│   ├── game-design.md             ← what makes a mod fun, as decision rules
+│   ├── design-gate.md             ← the nine questions + review checklist
 │   ├── version-matrix.md          ← known-good MC × loader combos
 │   ├── gametest-rules.md          ← non-flaky test rules
 │   ├── log-watcher-rules.md       ← universal + per-loader log baselines

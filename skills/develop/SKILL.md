@@ -220,6 +220,14 @@ ceremony. Minecraft review ALWAYS goes to `modsmith-pr-reviewer` in
 Lane 1 (`modsmith-reviewer` is the Lane 2 end-of-run auditor); never to
 a generic web-app reviewer.
 
+0. **Design gate (player-facing changes only).** If the change adds or
+   alters anything a player can see, hear, or do, answer the nine
+   questions in `references/design-gate.md` against the project's
+   `docs/design/bible.md` and put them in the PR body's **Design**
+   section (or cite the feature's `docs/design/briefs/<slug>.md`). No
+   bible → say so and offer `/modsmith:design bible` before building; a
+   failing gate → stop and present the alternative. Bug fixes, refactors,
+   and dev tooling skip this step and say so in one line.
 1. **Branch** from the default branch: `fix/<slug>` or `feat/<slug>`. One
    coherent change per branch.
 2. **Red first.** For a bug: write the test that reproduces it at the
